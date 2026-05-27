@@ -1,0 +1,34 @@
+{
+  "name": "opera-base",
+  "version": "0.1.0",
+  "description": "Operonix base plugin — YAML generation from operational rules",
+  "author": "Operonix",
+  "skills": [
+    {
+      "name": "yaml-gen",
+      "path": "skills/yaml-gen/SKILL.md",
+      "description": "Generates YAML from operational rules"
+    },
+    {
+      "name": "operonix-deploy",
+      "path": "skills/operonix-deploy/SKILL.md",
+      "description": "Deploys a project to Kubernetes with dry-run validation and rollout verification"
+    }
+  ],
+  "commands": [
+    {
+      "name": "yaml-gen",
+      "path": "commands/yaml-gen.md"
+    },
+    {
+      "name": "operonix-deploy",
+      "path": "commands/operonix-deploy.md"
+    }
+  ],
+  "references": [
+    {
+      "name": "rules",
+      "path": "references/rules.md"
+    }
+  ]
+}
