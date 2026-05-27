@@ -1,0 +1,15 @@
+{
+  "name": "pgtecmed",
+  "owner": {
+    "name": "Operonix",
+    "email": "pedro@pgtecmed.com"
+  },
+  "description": "Operonix plugin marketplace — opera-base: scaffolds Kubernetes manifests, Dockerfiles and GitLab CI pipelines for Operonix/Novlok projects.",
+  "plugins": [
+    {
+      "name": "opera-base",
+      "source": "./opera-base",
+      "description": "Scaffolds Kubernetes manifests (APISIX, Vault, ArgoCD, Cilium, Cloudflare, Prometheus), Dockerfile and GitLab CI pipeline for Operonix projects on the Novlok platform."
+    }
+  ]
+}
