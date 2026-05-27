@@ -1,3 +1,8 @@
+---
+name: operonix-deploy
+description: Scaffolds Kubernetes manifests, Dockerfile and GitLab CI pipeline for an Operonix project. Triggers on "generate manifests", "scaffold project", "deploy project", "/opera-base:operonix-deploy". Generates kubernetes/, argocd/, Dockerfile, .gitlab-ci.yml from runtime inputs. Does NOT apply anything to the cluster.
+---
+
 # Skill: operonix-deploy
 
 ## Trigger

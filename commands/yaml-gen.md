@@ -1,3 +1,9 @@
+---
+name: yaml-gen
+description: Generates a YAML file from the operational rules in references/rules.md.
+allowed-tools: Read, Write
+---
+
 # /opera-base:yaml-gen
 
 Generates a YAML file from the operational rules defined in `references/rules.md`.

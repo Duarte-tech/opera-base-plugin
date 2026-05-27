@@ -1,34 +1,19 @@
 {
   "name": "opera-base",
   "version": "0.1.0",
-  "description": "Operonix base plugin — YAML generation from operational rules",
-  "author": "Operonix",
-  "skills": [
-    {
-      "name": "yaml-gen",
-      "path": "skills/yaml-gen/SKILL.md",
-      "description": "Generates YAML from operational rules"
-    },
-    {
-      "name": "operonix-deploy",
-      "path": "skills/operonix-deploy/SKILL.md",
-      "description": "Deploys a project to Kubernetes with dry-run validation and rollout verification"
-    }
-  ],
-  "commands": [
-    {
-      "name": "yaml-gen",
-      "path": "commands/yaml-gen.md"
-    },
-    {
-      "name": "operonix-deploy",
-      "path": "commands/operonix-deploy.md"
-    }
-  ],
-  "references": [
-    {
-      "name": "rules",
-      "path": "references/rules.md"
-    }
+  "description": "Operonix base plugin — scaffolds Kubernetes manifests, Dockerfiles and GitLab CI pipelines for Operonix projects. Skills: operonix-deploy (full project scaffold), yaml-gen (YAML from operational rules).",
+  "author": {
+    "name": "Operonix",
+    "email": "pedro@pgtecmed.com"
+  },
+  "keywords": [
+    "operonix",
+    "kubernetes",
+    "apisix",
+    "vault",
+    "argocd",
+    "gitlab-ci",
+    "scaffold",
+    "novlok"
   ]
 }

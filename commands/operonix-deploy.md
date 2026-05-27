@@ -1,3 +1,9 @@
+---
+name: operonix-deploy
+description: Scaffolds all Kubernetes manifests, Dockerfile and GitLab CI pipeline for a project. Output is YAML only — nothing is applied to the cluster.
+allowed-tools: Read, Write, Glob, Grep, Bash
+---
+
 # /opera-base:operonix-deploy
 
 Scaffolds all Kubernetes manifests, Dockerfile, and GitLab CI pipeline for a project.

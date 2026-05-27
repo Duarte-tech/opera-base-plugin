@@ -1,3 +1,8 @@
+---
+name: yaml-gen
+description: Generates YAML from the Operonix operational rules defined in references/rules.md. Triggers on "generate YAML", "convert rules to YAML", "/opera-base:yaml-gen".
+---
+
 # Skill: yaml-gen
 
 ## Trigger
