@@ -131,7 +131,7 @@ spec:
 
 ### 3b. OTel — Instrumentation CR (auto-injection)
 
-Generate only if `otel.enabled = true` (default: true).
+Generate only if `otel.autoinstrumentation.enable = true` (default: true).
 
 Uses the **OpenTelemetry Operator** `Instrumentation` CR to auto-inject the SDK into pods — no manual SDK wiring required. The operator injects the agent via the pod annotation.
 
@@ -173,7 +173,7 @@ spec:
 
 In Helm templates, wrap the annotation in a conditional:
 ```yaml
-{{- if .Values.otel.enabled }}
+{{- if .Values.otel.autoinstrumentation.enable }}
 annotations:
   instrumentation.opentelemetry.io/inject-{{ .Values.stack }}: "true"
 {{- end }}
@@ -585,6 +585,8 @@ otel:
   sampler:
     type: parentbased_traceidratio
     argument: "1"
+  autoinstrumentation:
+    enable: true   # controls Instrumentation CR generation and Deployment annotation
 stack: <stack>   # nodejs | java | python | go — used for OTel injection annotation
 ```
 

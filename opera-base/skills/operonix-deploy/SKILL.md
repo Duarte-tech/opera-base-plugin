@@ -170,15 +170,15 @@ Generate `ServiceMonitor` targeting `/metrics` on each service port.
 No special labels required — selector: `app: <service>`.
 Helm: wrap the whole resource in `{{- if .Values.prometheus.enabled }}`.
 
-**OTel Instrumentation CR** — skip if `otel.enabled = false`.
+**OTel Instrumentation CR** — skip if `otel.autoinstrumentation.enable = false`.
 
 Generate the `opentelemetry.io/v1alpha1 Instrumentation` CR:
 - Endpoint: `otel_endpoint` from runtime input (helm: `{{ .Values.otel.endpoint }}`)
 - Include **only** the language block matching the project stack; remove the others
-- Helm: wrap in `{{- if .Values.otel.enabled }}`
+- Helm: wrap in `{{- if .Values.otel.autoinstrumentation.enable }}`
 
 Add the stack-specific auto-injection annotation to every **Deployment** (from Step 3):
-- Helm: `instrumentation.opentelemetry.io/inject-{{ .Values.stack }}: "true"` inside `{{- if .Values.otel.enabled }}`
+- Helm: `instrumentation.opentelemetry.io/inject-{{ .Values.stack }}: "true"` inside `{{- if .Values.otel.autoinstrumentation.enable }}`
 - Kustomize: hardcode the annotation for the detected stack
 
 Use the CR templates from `references/rules.md` Rule 3b.
