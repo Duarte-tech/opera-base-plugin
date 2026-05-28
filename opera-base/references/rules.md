@@ -496,8 +496,10 @@ helm/
 - `Chart.yaml`: `apiVersion: v2`, `name: <project>`, `version: 0.1.0`, `appVersion: latest`
 - `_helpers.tpl`: define `<project>.fullname`, `<project>.labels`, `<project>.selectorLabels`
 - All variable fields use `{{ .Values.<key> }}` — never hardcode project-specific values
-- Key `values.yaml` fields:
 
+**Values files — one base + one per environment (all live in the app repo):**
+
+`values.yaml` — base defaults shared by all environments:
 ```yaml
 replicaCount: 1
 image:
@@ -522,7 +524,51 @@ otel:
   endpoint: <otel_endpoint>
 ```
 
-- Image tag patching by CI (`update-k8s-tag`) targets `values.yaml` in the app repo branch: `yq e '.image.tag = "<tag>"' -i values.yaml`
+`values-dev.yaml` — development overrides:
+```yaml
+replicaCount: 1
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "256Mi"
+    cpu: "250m"
+```
+
+`values-qua.yaml` — staging/QA overrides:
+```yaml
+replicaCount: 1
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "256Mi"
+    cpu: "250m"
+```
+
+`values-prd.yaml` — production overrides:
+```yaml
+replicaCount: 2
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "200m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+```
+
+ArgoCD Application CR references both files via `valueFiles` in the multi-source config:
+```yaml
+helm:
+  valueFiles:
+  - $values/values.yaml
+  - $values/values-<env>.yaml   # dev | qua | prd
+```
+
+- Image tag patching by CI (`update-k8s-tag`) targets `values-<env>.yaml` on the current branch: `yq e '.image.tag = "<tag>"' -i values-<env>.yaml`
 
 ---
 

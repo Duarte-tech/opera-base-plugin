@@ -44,9 +44,12 @@ No files are applied to the cluster — output is YAML only.
 Bootstrapped with `helm create <project>` — generic templates are removed; custom CRs replace them.
 
 ```
+values.yaml               (base defaults — app repo root)
+values-dev.yaml           (dev overrides — app repo root)
+values-qua.yaml           (qua overrides — app repo root)
+values-prd.yaml           (prd overrides, replicas: 2 — app repo root)
 helm/<project>/
 ├── Chart.yaml
-├── values.yaml           (replaced with project schema)
 ├── .helmignore
 └── templates/
     ├── _helpers.tpl      (from helm create, extended if needed)
