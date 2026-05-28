@@ -202,7 +202,8 @@ spec:
     zoneName: novlok.co
     proxied: true
     type: A
-    loadbalancerRef:
+    # ipAddress: <ip>  # optional — use if no LoadBalancer reference
+    loadbalancerRef:   # optional — references the APISIX gateway LoadBalancer
       name: apisix-gateway
       namespace: apisix
   providerConfigRef:
@@ -215,6 +216,8 @@ spec:
 
 No cluster-wide default-deny. Required: **mutual TLS** between all pods in the namespace.
 Ingress from the `apisix` namespace is always allowed (no mTLS required on that path).
+
+Cilium mutual authentication (SPIFFE/SPIRE) must be enforced on **both directions** — ingress and egress — for full mTLS between intra-namespace pods.
 
 ```yaml
 apiVersion: cilium.io/v2
@@ -229,13 +232,34 @@ spec:
   - fromEndpoints:
     - matchLabels:
         io.kubernetes.pod.namespace: apisix
-  # Allow intra-namespace traffic with mTLS
+  # Allow intra-namespace traffic — mTLS required
   - fromEndpoints:
     - matchLabels:
         io.kubernetes.pod.namespace: <project>
     authentication:
       mode: required
+  egress:
+  # Allow egress to intra-namespace pods — mTLS required
+  - toEndpoints:
+    - matchLabels:
+        io.kubernetes.pod.namespace: <project>
+    authentication:
+      mode: required
+  # Allow egress to kube-dns
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s:k8s-app: kube-dns
+    toPorts:
+    - ports:
+      - port: "53"
+        protocol: UDP
+      rules:
+        dns:
+        - matchPattern: "*"
 ```
+
+> **Prerequisites:** Cilium must be deployed with `authentication.mutual.spire.enabled: true` and a SPIRE server running in the cluster. Verify with `cilium config view | grep spire`.
 
 Ref: https://docs.cilium.io/en/latest/network/servicemesh/mutual-authentication/mutual-authentication-example/
 
@@ -421,6 +445,194 @@ ENV PATH=/root/.local/bin:$PATH
 EXPOSE 8000
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "app:app"]
 ```
+
+---
+
+## 11. Output format — Helm vs Kustomize
+
+At runtime the user chooses one of two output formats. The manifests generated in Steps 3–9 are identical in content; only the layout and wrapping differ.
+
+---
+
+### `helm` — Helm chart templates
+
+Output root: `helm/` (intended to be committed to the separate Helm chart repo).  
+Per-environment values live in `values.yaml` in the **app repo** per branch (ArgoCD multi-source, as per Rule 4).
+
+```
+helm/
+├── Chart.yaml
+├── values.yaml                # base defaults used by all environments
+└── templates/
+    ├── _helpers.tpl
+    ├── namespace.yaml
+    ├── serviceaccount.yaml
+    ├── app/
+    │   ├── deployment.yaml
+    │   ├── service.yaml
+    │   └── configmap.yaml
+    ├── apisix/
+    │   ├── route.yaml
+    │   └── upstream.yaml
+    ├── vault/
+    │   ├── connection.yaml
+    │   ├── auth.yaml
+    │   └── staticsecret.yaml
+    ├── cilium/
+    │   └── networkpolicy.yaml
+    ├── prometheus/
+    │   └── servicemonitor.yaml
+    ├── alertmanager/
+    │   └── prometheusrule.yaml
+    └── crossplane/
+        ├── cloudflare/
+        │   └── records.yaml
+        └── vault/
+            └── policy.yaml
+```
+
+**Helm conventions:**
+
+- `Chart.yaml`: `apiVersion: v2`, `name: <project>`, `version: 0.1.0`, `appVersion: latest`
+- `_helpers.tpl`: define `<project>.fullname`, `<project>.labels`, `<project>.selectorLabels`
+- All variable fields use `{{ .Values.<key> }}` — never hardcode project-specific values
+- Key `values.yaml` fields:
+
+```yaml
+replicaCount: 1
+image:
+  repository: <image_registry>
+  tag: latest
+  pullPolicy: IfNotPresent
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "256Mi"
+    cpu: "250m"
+service:
+  type: ClusterIP
+  port: <port>
+vault:
+  address: <vault_address>
+apisix:
+  subdomain: <subdomain>
+otel:
+  endpoint: <otel_endpoint>
+```
+
+- Image tag patching by CI (`update-k8s-tag`) targets `values.yaml` in the app repo branch: `yq e '.image.tag = "<tag>"' -i values.yaml`
+
+---
+
+### `kustomize` — Kustomize base + overlays
+
+Output root: `kubernetes/`.
+
+```
+kubernetes/
+├── base/
+│   ├── kustomization.yaml         # lists all resources
+│   ├── namespace.yaml
+│   ├── serviceaccount.yaml
+│   ├── app/
+│   │   ├── deployment.yaml
+│   │   ├── service.yaml
+│   │   ├── configmap.yaml
+│   │   └── kustomization.yaml
+│   ├── apisix/
+│   │   ├── route.yaml
+│   │   ├── upstream.yaml
+│   │   └── kustomization.yaml
+│   ├── vault/
+│   │   ├── connection.yaml
+│   │   ├── auth.yaml
+│   │   ├── staticsecret.yaml
+│   │   └── kustomization.yaml
+│   ├── cilium/
+│   │   ├── networkpolicy.yaml
+│   │   └── kustomization.yaml
+│   ├── prometheus/
+│   │   ├── servicemonitor.yaml
+│   │   └── kustomization.yaml
+│   ├── alertmanager/
+│   │   ├── prometheusrule.yaml
+│   │   └── kustomization.yaml
+│   └── crossplane/
+│       ├── cloudflare/
+│       │   ├── records.yaml
+│       │   └── kustomization.yaml
+│       └── vault/
+│           ├── policy.yaml
+│           └── kustomization.yaml
+└── overlays/
+    ├── dev/
+    │   ├── kustomization.yaml
+    │   └── patches/
+    │       └── replicas.yaml
+    ├── qua/
+    │   ├── kustomization.yaml
+    │   └── patches/
+    │       └── replicas.yaml
+    └── prd/
+        ├── kustomization.yaml
+        └── patches/
+            └── replicas.yaml
+```
+
+**Kustomize conventions:**
+
+- `base/kustomization.yaml` lists every resource file across all sub-directories
+- Each overlay `kustomization.yaml` references `../../base` and applies env patches:
+
+```yaml
+# overlays/dev/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../base
+patches:
+- path: patches/replicas.yaml
+images:
+- name: <image_registry>
+  newTag: latest   # patched by CI update-k8s-tag job
+```
+
+- `patches/replicas.yaml` sets replica count per environment (dev: 1, qua: 1, prd: 2+)
+- Image tag patching by CI (`update-k8s-tag`) targets the overlay `kustomization.yaml`: `kustomize edit set image <registry>=<registry>:<tag>`
+- ArgoCD Application CR: source path set to `kubernetes/overlays/<env>`; no separate Helm chart repo needed in this mode
+
+---
+
+## 10. Deployment security context
+
+Every generated `Deployment` must include the following security hardening. These defaults follow the Kubernetes restricted Pod Security Standard.
+
+```yaml
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: <service>
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+```
+
+Exceptions:
+- `readOnlyRootFilesystem: false` — only if the process requires writing to the local filesystem at runtime (e.g., temp files, Prisma engine). Document the reason in a comment.
+- `runAsUser` — override per stack if the base image enforces a different UID (e.g., `node:24-alpine` uses UID 1000 by default; align with the Dockerfile `USER` directive).
 
 ---
 
