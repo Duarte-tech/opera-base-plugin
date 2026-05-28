@@ -107,10 +107,12 @@ spec:
 
 ## 3. Observability
 
-Check `kubernetes/prometheus/` for an existing `ServiceMonitor` CR.
+Both Prometheus and OTel are opt-in via `values.yaml` flags (`prometheus.enabled`, `otel.enabled`).  
+Check for an existing `ServiceMonitor` in the prometheus dir before generating.
 
-- If **not found**: generate a baseline `ServiceMonitor` — no special labels required
-- Also configure OTel exporter — collector endpoint and protocol: **ask at runtime** (varies per project and language; for Node.js default to `otlp/http`)
+### 3a. Prometheus — ServiceMonitor
+
+Generate only if `prometheus.enabled = true` (default: true) and no existing `ServiceMonitor` found.
 
 ```yaml
 apiVersion: monitoring.coreos.com/v1
@@ -126,6 +128,58 @@ spec:
   - port: http
     path: /metrics
 ```
+
+### 3b. OTel — Instrumentation CR (auto-injection)
+
+Generate only if `otel.enabled = true` (default: true).
+
+Uses the **OpenTelemetry Operator** `Instrumentation` CR to auto-inject the SDK into pods — no manual SDK wiring required. The operator injects the agent via the pod annotation.
+
+```yaml
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: <project>-instrumentation
+  namespace: <project>
+spec:
+  exporter:
+    endpoint: <otel_endpoint>   # from runtime input
+  propagators:
+    - tracecontext
+    - baggage
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1"
+  nodejs:                        # include only the block matching the project stack
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-nodejs:latest
+  java:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:latest
+  python:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:latest
+  go:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-go:latest
+```
+
+> Include **only** the language block that matches the project stack. Remove the others.
+
+**Deployment annotation** (added to every Deployment so the operator injects the agent):
+
+| Stack | Annotation key |
+|-------|---------------|
+| `nodejs` | `instrumentation.opentelemetry.io/inject-nodejs: "true"` |
+| `java` | `instrumentation.opentelemetry.io/inject-java: "true"` |
+| `python` | `instrumentation.opentelemetry.io/inject-python: "true"` |
+| `go` | `instrumentation.opentelemetry.io/inject-go: "true"` |
+
+In Helm templates, wrap the annotation in a conditional:
+```yaml
+{{- if .Values.otel.enabled }}
+annotations:
+  instrumentation.opentelemetry.io/inject-{{ .Values.stack }}: "true"
+{{- end }}
+```
+
+> **Prerequisite:** OpenTelemetry Operator must be running in the cluster. Verify: `kubectl get pods -n opentelemetry-operator-system`
 
 ---
 
@@ -520,8 +574,18 @@ vault:
   address: <vault_address>
 apisix:
   subdomain: <subdomain>
+prometheus:
+  enabled: true
+  path: /metrics
+  port: http
 otel:
+  enabled: true
   endpoint: <otel_endpoint>
+  protocol: otlp/http
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1"
+stack: <stack>   # nodejs | java | python | go — used for OTel injection annotation
 ```
 
 `values-dev.yaml` — development overrides:

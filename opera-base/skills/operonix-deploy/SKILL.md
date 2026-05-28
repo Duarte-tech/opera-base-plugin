@@ -164,17 +164,30 @@ Use the CR template from `references/rules.md` Rule 6.
 
 ### Step 7 — Prometheus / Observability manifests
 
-Skip if `has_monitor = true`.
+**ServiceMonitor** — skip if `has_monitor = true` or `prometheus.enabled = false`.
 
 Generate `ServiceMonitor` targeting `/metrics` on each service port.
 No special labels required — selector: `app: <service>`.
-OTel endpoint: `otel_endpoint` from runtime input (helm: `{{ .Values.otel.endpoint }}`).
+Helm: wrap the whole resource in `{{- if .Values.prometheus.enabled }}`.
+
+**OTel Instrumentation CR** — skip if `otel.enabled = false`.
+
+Generate the `opentelemetry.io/v1alpha1 Instrumentation` CR:
+- Endpoint: `otel_endpoint` from runtime input (helm: `{{ .Values.otel.endpoint }}`)
+- Include **only** the language block matching the project stack; remove the others
+- Helm: wrap in `{{- if .Values.otel.enabled }}`
+
+Add the stack-specific auto-injection annotation to every **Deployment** (from Step 3):
+- Helm: `instrumentation.opentelemetry.io/inject-{{ .Values.stack }}: "true"` inside `{{- if .Values.otel.enabled }}`
+- Kustomize: hardcode the annotation for the detected stack
+
+Use the CR templates from `references/rules.md` Rule 3b.
 
 Output path:
-- `helm`: `helm/templates/prometheus/`
+- `helm`: `helm/templates/prometheus/` (ServiceMonitor + Instrumentation)
 - `kustomize`: `kubernetes/base/prometheus/` + `kustomization.yaml`
 
-Use the CR template from `references/rules.md` Rule 3.
+> Prerequisite: OpenTelemetry Operator must be running. Flag in output summary if cluster state is unknown.
 
 ---
 
@@ -330,7 +343,7 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `helm/templates/vault/` | Created / Skipped | Secrets found: yes/no |
 | `helm/templates/apisix/` | Created | Route + N upstreams |
 | `helm/templates/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
-| `helm/templates/prometheus/` | Created / Already existed | — |
+| `helm/templates/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.enabled) + Instrumentation CR (if otel.enabled) |
 | `helm/templates/alertmanager/` | Created | — |
 | `helm/templates/cilium/` | Created | mTLS ingress+egress; SPIRE required |
 | `argocd/` | Created | Application (multi-source) + Secret |
@@ -347,7 +360,7 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `kubernetes/base/vault/` | Created / Skipped | Secrets found: yes/no |
 | `kubernetes/base/apisix/` | Created | Route + N upstreams |
 | `kubernetes/base/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
-| `kubernetes/base/prometheus/` | Created / Already existed | — |
+| `kubernetes/base/prometheus/` | Created / Already existed | ServiceMonitor + Instrumentation CR (stack-specific) |
 | `kubernetes/base/alertmanager/` | Created | — |
 | `kubernetes/base/cilium/` | Created | mTLS ingress+egress; SPIRE required |
 | `kubernetes/overlays/dev|qua|prd/` | Created | replicas patch + image tag placeholder |

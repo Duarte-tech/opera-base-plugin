@@ -58,13 +58,13 @@ helm/<project>/
     ├── app/              Deployment (securityContext), Service, ConfigMap
     ├── apisix/           ApisixRoute, ApisixUpstream
     ├── alertmanager/     PrometheusRule
-    ├── prometheus/       ServiceMonitor (if not already present)
+    ├── prometheus/       ServiceMonitor (if prometheus.enabled) + Instrumentation CR (if otel.enabled)
     ├── cilium/           CiliumNetworkPolicy (mTLS ingress+egress)
     └── crossplane/
         ├── cloudflare/   Cloudflare DNS Records CR
         └── vault/        Vault mount, user, policy CRs (Crossplane)
 argocd/
-├── application-<project>.yaml   (multi-source: chart repo + values.yaml)
+├── application-<project>.yaml   (multi-source: chart repo + values.yaml + values-<env>.yaml)
 └── secret-<project>-repo.yaml
 Dockerfile
 .gitlab-ci.yml
@@ -82,7 +82,7 @@ kubernetes/
 │   ├── app/              Deployment (securityContext), Service, ConfigMap
 │   ├── apisix/           ApisixRoute, ApisixUpstream
 │   ├── alertmanager/     PrometheusRule
-│   ├── prometheus/       ServiceMonitor (if not already present)
+│   ├── prometheus/       ServiceMonitor (if prometheus.enabled) + Instrumentation CR (if otel.enabled)
 │   ├── cilium/           CiliumNetworkPolicy (mTLS ingress+egress)
 │   └── crossplane/
 │       ├── cloudflare/   Cloudflare DNS Records CR
