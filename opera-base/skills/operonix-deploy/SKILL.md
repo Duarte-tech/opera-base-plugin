@@ -208,6 +208,32 @@ Output path:
 
 ---
 
+### Step 8b — Autoscaling (HPA or KEDA)
+
+Skip if `autoscaling.enabled = false` (default).
+
+Ask the user: **HPA** (standard Kubernetes) or **KEDA** (event-driven)?  
+If no preference, default to `hpa`.
+
+Generate one autoscaler resource per service:
+- `hpa`: `autoscaling/v2 HorizontalPodAutoscaler`
+- `keda`: `keda.sh/v1alpha1 ScaledObject`
+
+Both use `autoscaling.minReplicas`, `autoscaling.maxReplicas`, `autoscaling.cpu.targetUtilization`, `autoscaling.memory.targetUtilization` from values.
+
+Helm: wrap in `{{- if .Values.autoscaling.enabled }}` with inner `{{- if eq .Values.autoscaling.type "hpa" }}` / `{{- else if eq .Values.autoscaling.type "keda" }}`.
+
+Output path:
+- `helm`: `helm/templates/autoscaling/`
+- `kustomize`: `kubernetes/base/autoscaling/` + `kustomization.yaml`
+
+Use CR templates from `references/rules.md` Rule 12.
+
+> Note: when autoscaling is enabled, `replicaCount` acts only as the initial replica count.
+> Flag the prerequisite (metrics-server for HPA, KEDA operator for KEDA) in the output summary.
+
+---
+
 ### Step 9 — Cilium network policy
 
 One `CiliumNetworkPolicy` per project (applies to all pods in namespace):
@@ -349,6 +375,7 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `helm/templates/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
 | `helm/templates/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.enabled) + Instrumentation CR (if otel.enabled) |
 | `helm/templates/alertmanager/` | Created | — |
+| `helm/templates/autoscaling/` | Created / Skipped | HPA or KEDA ScaledObject (if autoscaling.enabled) |
 | `helm/templates/cilium/` | Created | mTLS ingress+egress; SPIRE required |
 | `argocd/` | Created | Application (multi-source) + Secret |
 | `Dockerfile` | Created | Stack: <stack> |
@@ -366,6 +393,7 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `kubernetes/base/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
 | `kubernetes/base/prometheus/` | Created / Already existed | ServiceMonitor + Instrumentation CR (stack-specific) |
 | `kubernetes/base/alertmanager/` | Created | — |
+| `kubernetes/base/autoscaling/` | Created / Skipped | HPA or KEDA ScaledObject (if autoscaling.enabled) |
 | `kubernetes/base/cilium/` | Created | mTLS ingress+egress; SPIRE required |
 | `kubernetes/overlays/dev|qua|prd/` | Created | replicas patch + image tag placeholder |
 | `argocd/` | Created | Application (single source, overlay path) + Secret |

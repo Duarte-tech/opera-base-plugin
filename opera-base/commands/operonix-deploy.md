@@ -59,6 +59,7 @@ helm/<project>/
     ├── apisix/           ApisixRoute, ApisixUpstream
     ├── alertmanager/     PrometheusRule
     ├── prometheus/       ServiceMonitor (if prometheus.enabled) + Instrumentation CR (if otel.enabled)
+    ├── autoscaling/      HPA or KEDA ScaledObject (if autoscaling.enabled)
     ├── cilium/           CiliumNetworkPolicy (mTLS ingress+egress)
     └── crossplane/
         ├── cloudflare/   Cloudflare DNS Records CR
@@ -83,6 +84,7 @@ kubernetes/
 │   ├── apisix/           ApisixRoute, ApisixUpstream
 │   ├── alertmanager/     PrometheusRule
 │   ├── prometheus/       ServiceMonitor (if prometheus.enabled) + Instrumentation CR (if otel.enabled)
+│   ├── autoscaling/      HPA or KEDA ScaledObject (if autoscaling.enabled)
 │   ├── cilium/           CiliumNetworkPolicy (mTLS ingress+egress)
 │   └── crossplane/
 │       ├── cloudflare/   Cloudflare DNS Records CR

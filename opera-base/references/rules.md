@@ -591,6 +591,15 @@ otel:
   autoinstrumentation:
     enable: true   # controls Instrumentation CR generation and Deployment annotation
 stack: <stack>   # nodejs | java | python | go — used for OTel injection annotation
+autoscaling:
+  enabled: false
+  type: hpa      # hpa | keda
+  minReplicas: 1
+  maxReplicas: 10
+  cpu:
+    targetUtilization: 70
+  memory:
+    targetUtilization: 80
 ```
 
 `values-dev.yaml` — development overrides:
@@ -717,6 +726,100 @@ images:
 - `patches/replicas.yaml` sets replica count per environment (dev: 1, qua: 1, prd: 2+)
 - Image tag patching by CI (`update-k8s-tag`) targets the overlay `kustomization.yaml`: `kustomize edit set image <registry>=<registry>:<tag>`
 - ArgoCD Application CR: source path set to `kubernetes/overlays/<env>`; no separate Helm chart repo needed in this mode
+
+---
+
+## 12. Autoscaling — HPA or KEDA
+
+Controlled by `autoscaling.enabled` and `autoscaling.type` in `values.yaml`.  
+When enabled, `replicaCount` is used only as the initial replica count — the autoscaler takes over.
+
+---
+
+### `hpa` — Kubernetes HorizontalPodAutoscaler
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: <service>-hpa
+  namespace: <project>
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: <service>
+  minReplicas: 1    # from autoscaling.minReplicas
+  maxReplicas: 10   # from autoscaling.maxReplicas
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70   # from autoscaling.cpu.targetUtilization
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80   # from autoscaling.memory.targetUtilization
+```
+
+---
+
+### `keda` — KEDA ScaledObject
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: <service>-scaledobject
+  namespace: <project>
+spec:
+  scaleTargetRef:
+    name: <service>
+  minReplicaCount: 1    # from autoscaling.minReplicas
+  maxReplicaCount: 10   # from autoscaling.maxReplicas
+  triggers:
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: "70"   # from autoscaling.cpu.targetUtilization
+  - type: memory
+    metricType: Utilization
+    metadata:
+      value: "80"   # from autoscaling.memory.targetUtilization
+```
+
+> **Prerequisites:**
+> - `hpa`: metrics-server must be running (`kubectl get deployment metrics-server -n kube-system`)
+> - `keda`: KEDA operator must be running (`kubectl get pods -n keda`)
+
+**values.yaml autoscaling schema:**
+
+```yaml
+autoscaling:
+  enabled: false
+  type: hpa      # hpa | keda
+  minReplicas: 1
+  maxReplicas: 10
+  cpu:
+    targetUtilization: 70
+  memory:
+    targetUtilization: 80
+```
+
+**Helm template conditional:**
+```yaml
+{{- if .Values.autoscaling.enabled }}
+{{- if eq .Values.autoscaling.type "hpa" }}
+# HPA manifest
+{{- else if eq .Values.autoscaling.type "keda" }}
+# ScaledObject manifest
+{{- end }}
+{{- end }}
+```
 
 ---
 
