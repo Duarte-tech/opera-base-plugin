@@ -1,6 +1,6 @@
 ---
 name: operonix-deploy
-description: Scaffolds Kubernetes manifests, Dockerfile and GitLab CI pipeline for an Operonix project. Triggers on "generate manifests", "scaffold project", "deploy project", "/opera-base:operonix-deploy". Generates kubernetes/, argocd/, Dockerfile, .gitlab-ci.yml from runtime inputs. Does NOT apply anything to the cluster.
+description: Scaffolds Kubernetes manifests, Dockerfile and GitLab CI pipeline for an Operonix project. Triggers on "generate manifests", "scaffold project", "deploy project", "/opera-base:operonix-deploy". Generates manifests as Helm chart templates or Kustomize base+overlays from runtime inputs. Does NOT apply anything to the cluster.
 ---
 
 # Skill: operonix-deploy
@@ -21,12 +21,13 @@ Collect all of these before generating any file. Ask as a grouped checklist in o
 | Input | Question |
 |-------|----------|
 | `project_name` | Name of the project (used as namespace, resource names, Vault path) |
+| `output_format` | Output format: **`helm`** (Helm chart templates) or **`kustomize`** (base + overlays) |
 | `stack` | Project stack — auto-detect from project root; confirm with user (`nodejs`, `go`, `java`, `python`) |
 | `services` | Services and ports, e.g. `frontend:3000, api:8080` |
 | `subdomain` | Subdomain for APISIX route → `<subdomain>.novlok.co` |
 | `image_registry` | Image path, e.g. `registry.gitlab.com/<group>/<project>/app` |
 | `gitlab_app_repo` | Application GitLab repo URL |
-| `gitlab_helm_repo` | Helm chart GitLab repo URL (separate repo) |
+| `gitlab_helm_repo` | Helm chart GitLab repo URL (separate repo) — **only if `output_format = helm`** |
 | `gitlab_argocd_repo` | ArgoCD GitLab repo URL (to fetch Application CR template) |
 | `gitlab_access` | GitLab access for ArgoCD Secret — SSH key or HTTPS token |
 | `vault_address` | Vault internal address, e.g. `https://vault.novlok.co` |
@@ -51,6 +52,18 @@ Confirm the detected stack with the user before proceeding.
 
 Execute steps in order. Steps 1 and 2 are read-only scans that inform later steps.
 
+> **Format rule:** after Step 2, all manifest files are generated according to `output_format`.  
+> Full directory structures and wrapping conventions are defined in `references/rules.md` Rule 11.  
+> Use the table below as a quick reference:
+>
+> | | `helm` | `kustomize` |
+> |-|--------|-------------|
+> | Root | `helm/templates/<area>/` | `kubernetes/base/<area>/` |
+> | Variable fields | `{{ .Values.<key> }}` | hardcoded (env diff via overlays) |
+> | Env differentiation | `values.yaml` per branch in app repo | `kubernetes/overlays/<env>/` |
+> | ArgoCD source | chart repo + values from app repo | `kubernetes/overlays/<env>` in app repo |
+> | CI image tag patch | `yq` on `values.yaml` | `kustomize edit set image` on overlay |
+
 ### Step 1 — Scan for secrets
 
 Scan: `.env`, `application.yml`, `application.properties`, `application-*.yml`, source files.
@@ -60,22 +73,24 @@ Scan: `.env`, `application.yml`, `application.properties`, `application-*.yml`, 
 
 ### Step 2 — Check for existing ServiceMonitor
 
-Look in `kubernetes/prometheus/` for any `ServiceMonitor` CR.
+- `helm`: look in `helm/templates/prometheus/` for any `ServiceMonitor` template
+- `kustomize`: look in `kubernetes/base/prometheus/` for any `ServiceMonitor` manifest
 
 - Found → `has_monitor = true`
 - Not found → `has_monitor = false`; will generate in Step 7
 
 ---
 
-### Step 3 — `kubernetes/app/`
+### Step 3 — App manifests (Deployment, Service, ConfigMap)
 
 For each service in `services`:
 
 **Deployment**
-- `image`: `<image_registry>:<tag>` — use `latest` as placeholder; `update-k8s-tag` CI job will update this
+- `image`: `<image_registry>:<tag>` (helm: `{{ .Values.image.repository }}:{{ .Values.image.tag }}`) — use `latest` as placeholder
 - `namespace`: `<project_name>`
 - `labels`: `app: <service>`
-- Resource requests/limits: sensible defaults (128Mi/256Mi, 100m/250m)
+- Resource requests/limits: sensible defaults — helm: `{{ .Values.resources.* }}`; kustomize: hardcoded (128Mi/256Mi, 100m/250m)
+- Security context: apply the template from `references/rules.md` Rule 10 to every Deployment. Adjust `runAsUser` to match the Dockerfile `USER` directive if different from 1001.
 
 **ConfigMap**
 - Non-sensitive config only
@@ -88,111 +103,169 @@ For each service in `services`:
 **Secret**
 - Only if `has_secrets = false`; otherwise omit — Vault handles it
 
+**Kustomize only:** generate `kubernetes/base/app/kustomization.yaml` listing all files in this directory.
+
 ---
 
-### Step 4 — `kubernetes/vault/` and `kubernetes/crossplane/vault/`
+### Step 4 — Vault manifests
 
 Skip if `has_secrets = false`.
 
-`kubernetes/vault/`:
-```
-VaultConnection  → address from runtime input (vault_address)
-VaultAuth        → method: kubernetes, mount: kubernetes, role: <project>, sa: <project>-sa
-VaultStaticSecret → mount: kv, type: kv-v2, path: novlok/<project>, destination: <project>-secrets
-```
-
-`kubernetes/crossplane/vault/`:
-- Crossplane CRs for mount path, user, and policy provisioning
+Generate `VaultConnection`, `VaultAuth`, `VaultStaticSecret` CRs:
+- `vault_address` from runtime input (helm: `{{ .Values.vault.address }}`)
+- Auth method: kubernetes, role: `<project>`, service account: `<project>-sa`
 - Mount path: `kv/novlok/<project>/`
-- Auth method: Kubernetes
+
+Also generate Crossplane Vault CRs (mount path, user, policy).
+
+Output path:
+- `helm`: `helm/templates/vault/`
+- `kustomize`: `kubernetes/base/vault/` + `kustomization.yaml`
 
 Use the CR templates from `references/rules.md` Rule 2.
 Verify API versions against cluster: `kubectl get crd | grep hashicorp`
 
 ---
 
-### Step 5 — `kubernetes/apisix/`
+### Step 5 — APISIX manifests
 
 One `ApisixRoute` CR with one `http` entry per service.
 One `ApisixUpstream` CR per service.
 
-- Domain: `<subdomain>.novlok.co`
+- Domain: `<subdomain>.novlok.co` (helm: `{{ .Values.apisix.subdomain }}.novlok.co`)
 - No plugins unless explicitly requested
 - `resolveGranularity: service`
 - Service names: `<service>-svc`
+
+Output path:
+- `helm`: `helm/templates/apisix/`
+- `kustomize`: `kubernetes/base/apisix/` + `kustomization.yaml`
 
 Use the CR templates from `references/rules.md` Rule 5.
 
 ---
 
-### Step 6 — `kubernetes/crossplane/cloudflare/`
+### Step 6 — Cloudflare DNS manifest
 
-One `dns.cloudflare.crossplane.io/v1alpha1 Records` CR:
+One `dns.cloudflare.crossplane.io/v1alpha1 Records` CR (plural — this is the correct kind):
 
 - `zoneName: novlok.co`
 - `proxied: true`, `type: A`
 - `loadbalancerRef: name: apisix-gateway, namespace: apisix`
 - `providerConfigRef: name: cloudflare-config`
 
+Output path:
+- `helm`: `helm/templates/crossplane/cloudflare/`
+- `kustomize`: `kubernetes/base/crossplane/cloudflare/` + `kustomization.yaml`
+
 Use the CR template from `references/rules.md` Rule 6.
 
 ---
 
-### Step 7 — `kubernetes/prometheus/`
+### Step 7 — Prometheus / Observability manifests
 
 Skip if `has_monitor = true`.
 
 Generate `ServiceMonitor` targeting `/metrics` on each service port.
 No special labels required — selector: `app: <service>`.
+OTel endpoint: `otel_endpoint` from runtime input (helm: `{{ .Values.otel.endpoint }}`).
 
-Also generate OTel exporter config:
-- Endpoint: `otel_endpoint` from runtime input
-- Protocol: `otlp/http` for Node.js; ask for other stacks
+Output path:
+- `helm`: `helm/templates/prometheus/`
+- `kustomize`: `kubernetes/base/prometheus/` + `kustomization.yaml`
 
 Use the CR template from `references/rules.md` Rule 3.
 
 ---
 
-### Step 8 — `kubernetes/alertmanager/`
+### Step 8 — Alertmanager manifests
 
 Basic `PrometheusRule` CR with alerts:
 - `PodCrashLooping` — pod restarts > 3 in 5 min
 - `HighCPU` — CPU > 80% for 10 min
 - `HighMemory` — memory > 85% for 10 min
 
+Output path:
+- `helm`: `helm/templates/alertmanager/`
+- `kustomize`: `kubernetes/base/alertmanager/` + `kustomization.yaml`
+
 ---
 
-### Step 9 — `kubernetes/cilium/`
+### Step 9 — Cilium network policy
 
 One `CiliumNetworkPolicy` per project (applies to all pods in namespace):
 
-- Allow ingress from `apisix` namespace (no mTLS)
-- Allow intra-namespace traffic with `authentication.mode: required`
+- Allow ingress from `apisix` namespace (no mTLS — external entry point)
+- Allow intra-namespace traffic (ingress) with `authentication.mode: required`
+- Allow intra-namespace traffic (egress) with `authentication.mode: required` — required for full mTLS
+- Allow egress to kube-dns (port 53/UDP)
+
+Output path:
+- `helm`: `helm/templates/cilium/`
+- `kustomize`: `kubernetes/base/cilium/` + `kustomization.yaml`
 
 Use the CR template from `references/rules.md` Rule 7.
 
+> mTLS requires Cilium deployed with `authentication.mutual.spire.enabled: true`. Note this prerequisite in the output summary if the cluster state is unknown.
+
 ---
 
-### Step 10 — ArgoCD resources
+### Step 10 — Format wrapping files
 
-1. Fetch the ArgoCD Application CR template:
-   - Clone/read the ArgoCD GitLab repo (`gitlab_argocd_repo`)
-   - Find an existing multi-source `Application` CR
-   - Use it as the base; substitute `project_name`, repo URLs, namespace
+Generate the format-specific scaffold files that wrap all manifests produced in Steps 3–9.
 
-2. Generate `argocd/application-<project>.yaml`:
+**If `output_format = helm`:**
+
+1. Run `helm create <project>` inside `helm/` to scaffold the base chart structure.
+2. Delete the generic templates that helm create produces — they will be replaced by our custom CRs:
+   ```
+   helm/<project>/templates/deployment.yaml
+   helm/<project>/templates/service.yaml
+   helm/<project>/templates/serviceaccount.yaml
+   helm/<project>/templates/ingress.yaml
+   helm/<project>/templates/hpa.yaml
+   helm/<project>/templates/NOTES.txt
+   helm/<project>/templates/tests/
+   ```
+3. Keep (and customise):
+   - `helm/<project>/Chart.yaml` — update `description`, set `version: 0.1.0`, `appVersion: latest`
+   - `helm/<project>/templates/_helpers.tpl` — already generated by helm create; extend with project-specific helpers if needed
+   - `helm/<project>/.helmignore`
+4. Replace `helm/<project>/values.yaml` entirely with the schema from `references/rules.md` Rule 11.
+5. Generate `helm/<project>/templates/namespace.yaml` and `helm/<project>/templates/serviceaccount.yaml` (ServiceAccount `<project>-sa`).
+
+**If `output_format = kustomize`:**
+
+1. `kubernetes/base/kustomization.yaml` — lists every resource file across all sub-directories
+2. `kubernetes/base/namespace.yaml` — Namespace CR
+3. `kubernetes/base/serviceaccount.yaml` — ServiceAccount `<project>-sa`
+4. Overlays for each environment (dev, qua, prd) — see structure in `references/rules.md` Rule 11
+5. Each overlay includes a `patches/replicas.yaml`: dev=1, qua=1, prd=2
+
+---
+
+### Step 11 — ArgoCD resources
+
+1. Fetch the ArgoCD Application CR template from `gitlab_argocd_repo` (find existing multi-source `Application` CR; use as base).
+
+2. Generate `argocd/application-<project>.yaml` — source depends on `output_format`:
+
+   **`helm`:**
    - Source 1: Helm chart repo (`gitlab_helm_repo`), branch = current env
    - Source 2: App repo (`gitlab_app_repo`), path = `values.yaml`, branch = current env
-   - Destination: `namespace: <project_name>`, `server: https://kubernetes.default.svc`
+
+   **`kustomize`:**
+   - Single source: App repo (`gitlab_app_repo`), path = `kubernetes/overlays/<env>`, branch = current env
+   - `gitlab_helm_repo` not used
+
+   Destination: `namespace: <project_name>`, `server: https://kubernetes.default.svc`
 
 3. Generate `argocd/secret-<project>-repo.yaml`:
-   - Type: `repository`
-   - GitLab access from `gitlab_access`
-   - Namespace: `argocd`
+   - Type: `repository`, GitLab access from `gitlab_access`, namespace: `argocd`
 
 ---
 
-### Step 11 — `Dockerfile`
+### Step 12 — `Dockerfile`
 
 Generate based on detected `stack`. Use the canonical patterns from `references/rules.md` Rule 9:
 
@@ -207,7 +280,7 @@ For Node.js projects with Prisma: include `openssl` apk package and copy Prisma 
 
 ---
 
-### Step 12 — `.gitlab-ci.yml`
+### Step 13 — `.gitlab-ci.yml`
 
 Generate based on `stack`. Use `references/rules.md` Rule 8 as the base template.
 
@@ -215,13 +288,15 @@ Adapt per stack:
 - `BASE_IMAGE_NODE` / build image variable
 - Lint and test jobs (see stack table in Rule 8)
 - `APP_IMAGE`: `<image_registry>`
-- `workflow.rules`: skip `kubernetes/**/*` changes
+- `workflow.rules`: skip changes to manifests dirs
 
-The `update-k8s-tag` job patches `values.yaml` in the current branch of the app repo and pushes back.
+CI image tag patch job (`update-k8s-tag`) — depends on `output_format`:
+- `helm`: `yq e '.image.tag = "<tag>"' -i values.yaml` on app repo branch
+- `kustomize`: `kustomize edit set image <registry>=<registry>:<tag>` on `kubernetes/overlays/<env>/kustomization.yaml`
 
 ---
 
-### Step 13 — `version.yaml`
+### Step 14 — `version.yaml`
 
 If not present in the project root, generate it:
 
@@ -233,21 +308,44 @@ version: "0.1.0"
 
 ## Output summary
 
-After all steps, report a table:
+After all steps, report a table. Adapt paths to `output_format`.
 
-| Directory / File | Action | Notes |
+**If `output_format = helm`:**
+
+| File / Directory | Action | Notes |
 |-----------------|--------|-------|
-| `kubernetes/app/` | Created | N deployments, N services, N configmaps |
-| `kubernetes/vault/` | Created / Skipped | Secrets found: yes/no |
-| `kubernetes/apisix/` | Created | Route + N upstreams |
-| `kubernetes/crossplane/cloudflare/` | Created | — |
-| `kubernetes/prometheus/` | Created / Already existed | — |
-| `kubernetes/alertmanager/` | Created | — |
-| `kubernetes/cilium/` | Created | — |
-| `argocd/` | Created | Application + Secret |
+| `helm/Chart.yaml` | Created | — |
+| `helm/values.yaml` | Created | Base values for all envs |
+| `helm/templates/_helpers.tpl` | Created | — |
+| `helm/templates/app/` | Created | N deployments (securityContext), N services, N configmaps |
+| `helm/templates/vault/` | Created / Skipped | Secrets found: yes/no |
+| `helm/templates/apisix/` | Created | Route + N upstreams |
+| `helm/templates/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
+| `helm/templates/prometheus/` | Created / Already existed | — |
+| `helm/templates/alertmanager/` | Created | — |
+| `helm/templates/cilium/` | Created | mTLS ingress+egress; SPIRE required |
+| `argocd/` | Created | Application (multi-source) + Secret |
 | `Dockerfile` | Created | Stack: <stack> |
-| `.gitlab-ci.yml` | Created | Stack: <stack> |
+| `.gitlab-ci.yml` | Created | Stack: <stack>; tag via yq |
+| `version.yaml` | Created / Already existed | — |
+
+**If `output_format = kustomize`:**
+
+| File / Directory | Action | Notes |
+|-----------------|--------|-------|
+| `kubernetes/base/` | Created | All manifests + kustomization.yaml per dir |
+| `kubernetes/base/app/` | Created | N deployments (securityContext), N services, N configmaps |
+| `kubernetes/base/vault/` | Created / Skipped | Secrets found: yes/no |
+| `kubernetes/base/apisix/` | Created | Route + N upstreams |
+| `kubernetes/base/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
+| `kubernetes/base/prometheus/` | Created / Already existed | — |
+| `kubernetes/base/alertmanager/` | Created | — |
+| `kubernetes/base/cilium/` | Created | mTLS ingress+egress; SPIRE required |
+| `kubernetes/overlays/dev|qua|prd/` | Created | replicas patch + image tag placeholder |
+| `argocd/` | Created | Application (single source, overlay path) + Secret |
+| `Dockerfile` | Created | Stack: <stack> |
+| `.gitlab-ci.yml` | Created | Stack: <stack>; tag via kustomize edit |
 | `version.yaml` | Created / Already existed | — |
 
 List any secrets moved to Vault.
-Flag any item that requires manual follow-up (e.g., ArgoCD CR template not found in repo).
+Flag any item that requires manual follow-up (e.g., ArgoCD CR template not found in repo, SPIRE not confirmed running).
