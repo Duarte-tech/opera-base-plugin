@@ -112,7 +112,7 @@ Check for an existing `ServiceMonitor` in the prometheus dir before generating.
 
 ### 3a. Prometheus — ServiceMonitor
 
-Generate only if `prometheus.enabled = true` (default: true) and no existing `ServiceMonitor` found.
+Generate only if `prometheus.serviceMonitor.enable = true` (default: true) and no existing `ServiceMonitor` found.
 
 ```yaml
 apiVersion: monitoring.coreos.com/v1
@@ -575,7 +575,10 @@ vault:
 apisix:
   subdomain: <subdomain>
 prometheus:
-  enabled: true
+  serviceMonitor:
+    enable: true   # controls ServiceMonitor generation
+  prometheusRules:
+    enable: true   # controls PrometheusRule (alerting rules) generation
   path: /metrics
   port: http
 otel:

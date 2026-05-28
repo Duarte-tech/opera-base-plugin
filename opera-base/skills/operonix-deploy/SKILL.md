@@ -164,11 +164,11 @@ Use the CR template from `references/rules.md` Rule 6.
 
 ### Step 7 — Prometheus / Observability manifests
 
-**ServiceMonitor** — skip if `has_monitor = true` or `prometheus.enabled = false`.
+**ServiceMonitor** — skip if `has_monitor = true` or `prometheus.serviceMonitor.enable = false`.
 
 Generate `ServiceMonitor` targeting `/metrics` on each service port.
 No special labels required — selector: `app: <service>`.
-Helm: wrap the whole resource in `{{- if .Values.prometheus.enabled }}`.
+Helm: wrap the whole resource in `{{- if .Values.prometheus.serviceMonitor.enable }}`.
 
 **OTel Instrumentation CR** — skip if `otel.autoinstrumentation.enable = false`.
 
@@ -193,10 +193,14 @@ Output path:
 
 ### Step 8 — Alertmanager manifests
 
+Skip if `prometheus.prometheusRules.enable = false`.
+
 Basic `PrometheusRule` CR with alerts:
 - `PodCrashLooping` — pod restarts > 3 in 5 min
 - `HighCPU` — CPU > 80% for 10 min
 - `HighMemory` — memory > 85% for 10 min
+
+Helm: wrap the whole resource in `{{- if .Values.prometheus.prometheusRules.enable }}`.
 
 Output path:
 - `helm`: `helm/templates/alertmanager/`
