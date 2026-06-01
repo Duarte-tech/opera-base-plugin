@@ -347,6 +347,7 @@ Generate based on detected `stack`. Use the canonical patterns from `references/
 
 | Stack | Builder image | Runtime image |
 |-------|--------------|---------------|
+| `nodejs` | `node:24-alpine` | `node:24-alpine` |
 | `react` | `node:24-alpine` | `nginxinc/nginx-unprivileged:alpine3.23-otel` |
 | `nextjs` | `node:24-alpine` | `node:24-alpine` (standalone runner) |
 | `go` | `golang:1.26.3-alpine` | `scratch` |
@@ -360,7 +361,7 @@ Generate based on detected `stack`. Use the canonical patterns from `references/
 | `package.json` has `"next"` in dependencies | `nextjs` |
 | `package.json` has `"react"` + (`vite.config.*` present OR `"vite"` in devDependencies), no `"next"` | `react` |
 
-**Keycloak detection** (`has_keycloak`): scan `package.json` dependencies and devDependencies for any of: `keycloak-js`, `@react-keycloak/web`, `@react-keycloak/native`. Also scan source files for `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID` appearing as literal placeholder strings or as `VITE_KEYCLOAK_*` env var references — either pattern triggers `has_keycloak = true`.
+**Keycloak detection** (`has_keycloak`): check `package.json` `dependencies` and `devDependencies` for any of: `keycloak-js`, `@react-keycloak/web`, `@react-keycloak/native`. If found → `has_keycloak = true`.
 
 **Dockerfile path for React projects:** always generate as `docker-build/Dockerfile` (not at project root). Use the canonical pattern from `references/rules.md` Rule 9.
 
@@ -388,8 +389,8 @@ The `build:app` job **must** use `moby/buildkit:rootless` — use the exact temp
 When `stack = react`, set `--local dockerfile=docker-build` in the `buildctl-daemonless.sh` command (Dockerfile is at `docker-build/Dockerfile`, not project root). Build context stays `--local context=.`. See Rule 8 React variant.
 
 CI image tag patch job (`update-k8s-tag`) — depends on `output_format`:
-- `helm`: `yq e '.image.tag = "<tag>"' -i values-<env>.yaml` on app repo branch (`dev` → `values-dev.yaml`, etc.)
-- `kustomize`: `kustomize edit set image <registry>=<registry>:<tag>` on `kubernetes/overlays/<env>/kustomization.yaml`
+- `helm`: `yq e '.image.tag = strenv(IMAGE_TAG)' -i values-${CI_COMMIT_REF_NAME}.yaml` on app repo branch (`dev` → `values-dev.yaml`, etc.)
+- `kustomize`: `kustomize edit set image <registry>=<registry>:${IMAGE_TAG}` on `kubernetes/overlays/${CI_COMMIT_REF_NAME}/kustomization.yaml`
 
 The `git commit` line in this job **must** use YAML single-quote wrapping to prevent validators from interpreting `ci:` as a YAML mapping key:
 ```yaml

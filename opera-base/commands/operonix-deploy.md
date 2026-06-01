@@ -121,4 +121,4 @@ version.yaml                     (created only if absent)
 ## Dependencies
 
 - Skill: `skills/operonix-deploy/SKILL.md`
-- Rules: `references/rules.md` (Rules 1–11)
+- Rules: `references/rules.md` (Rules 1–12)

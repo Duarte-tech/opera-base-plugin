@@ -122,7 +122,7 @@ Crossplane Vault user and policy CRs are always generated regardless of mount mo
 
 ## 3. Observability
 
-Both Prometheus and OTel are opt-in via `values.yaml` flags (`prometheus.enabled`, `otel.enabled`).  
+Prometheus and OTel generation is controlled by `values.yaml` flags: `prometheus.serviceMonitor.enable`, `prometheus.prometheusRules.enable`, and `otel.autoinstrumentation.enable`.  
 Check for an existing `ServiceMonitor` in the prometheus dir before generating.
 
 ### 3a. Prometheus — ServiceMonitor

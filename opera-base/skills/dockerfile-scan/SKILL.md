@@ -38,6 +38,8 @@ If the command fails (not found), stop and instruct the user to install Trivy:
 
 Do not proceed until Trivy is available.
 
+> **Version alignment:** the CI pipeline uses `aquasec/trivy:0.69.3`. For consistent results between local scan and CI, ensure the locally installed version is `≥ 0.69.3`. Warn the user if the detected version is older.
+
 ---
 
 ### Step 2 — Resolve Dockerfile path
