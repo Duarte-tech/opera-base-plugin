@@ -1,6 +1,6 @@
 {
   "name": "opera-base",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Operonix base plugin — scaffolds Kubernetes manifests, Dockerfiles and GitLab CI pipelines for Operonix projects. Skills: operonix-deploy (full project scaffold), yaml-gen (YAML from operational rules).",
   "author": {
     "name": "Operonix",
