@@ -103,6 +103,19 @@ spec:
 
 > **Note:** Verify exact CRD versions against the installed operator in the cluster (`kubectl get crd | grep hashicorp`).
 
+**Mount path resolution (determined at runtime via `vault_mount_mode`):**
+
+| `vault_mount_mode` | `spec.mount` | `spec.path` | Crossplane mount CR |
+|--------------------|-------------|-------------|---------------------|
+| `new` | `kv` | `novlok/<project>` | Generated |
+| `default` | KV engine from `vault_mount_path` | `<vault_mount_path>/<project>` | Skipped (mount exists) |
+
+Crossplane Vault user and policy CRs are always generated regardless of mount mode.
+
+**Secret classification** — only `confidential_secrets` from Step 1 are stored in Vault:
+- Confidential: API keys, tokens, passwords, private keys, encryption keys, certificates, webhook secrets, high-entropy strings
+- Non-sensitive (`plain_config`): goes to ConfigMap — public URLs, hostnames, feature flags, log levels, timeouts
+
 ---
 
 ## 3. Observability

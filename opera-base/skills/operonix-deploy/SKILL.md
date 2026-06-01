@@ -31,6 +31,8 @@ Collect all of these before generating any file. Ask as a grouped checklist in o
 | `gitlab_argocd_repo` | ArgoCD GitLab repo URL (to fetch Application CR template) |
 | `gitlab_access` | GitLab access for ArgoCD Secret — SSH key or HTTPS token |
 | `vault_address` | Vault internal address, e.g. `https://vault.novlok.co` |
+| `vault_mount_mode` | *(ask only if `has_secrets = true` after Step 1)* Vault KV mount: **`new`** (create a dedicated mount for this project) or **`default`** (reuse an existing mount) |
+| `vault_mount_path` | *(ask only if `vault_mount_mode = default`)* Existing mount path, e.g. `kv/novlok` |
 | `otel_endpoint` | OpenTelemetry collector endpoint (protocol varies per project; Node.js default: `otlp/http`) |
 
 ---
@@ -64,12 +66,24 @@ Execute steps in order. Steps 1 and 2 are read-only scans that inform later step
 > | ArgoCD source | chart repo + values from app repo | `kubernetes/overlays/<env>` in app repo |
 > | CI image tag patch | `yq` on `values.yaml` | `kustomize edit set image` on overlay |
 
-### Step 1 — Scan for secrets
+### Step 1 — Scan and classify secrets
 
 Scan: `.env`, `application.yml`, `application.properties`, `application-*.yml`, source files.
 
-- If secrets found → set `has_secrets = true`; list them for the user
-- If none → `has_secrets = false`; note in summary
+For each key-value pair found, classify as **confidential** or **non-sensitive**:
+
+| → Vault (`confidential_secrets`) | → ConfigMap (`plain_config`) |
+|----------------------------------|------------------------------|
+| API keys, access/refresh tokens, OAuth secrets | Public URLs, hostnames, ports |
+| Passwords, database credentials | Feature flags, log levels, timeouts |
+| Private keys, encryption/signing keys, certificates | Environment names, non-secret identifiers |
+| Webhook secrets, JWT secrets | Anything safe to store in plain text in Git |
+| Any high-entropy random-looking string | — |
+
+After classifying, **present both lists to the user for confirmation** and allow reclassification before proceeding.
+
+- `confidential_secrets` non-empty → `has_secrets = true`; ask `vault_mount_mode` (and `vault_mount_path` if `default`)
+- `confidential_secrets` empty → `has_secrets = false`; note in summary
 
 ### Step 2 — Check for existing ServiceMonitor
 
@@ -93,7 +107,7 @@ For each service in `services`:
 - Security context: apply the template from `references/rules.md` Rule 10 to every Deployment. Adjust `runAsUser` to match the Dockerfile `USER` directive if different from 1001.
 
 **ConfigMap**
-- Non-sensitive config only
+- Include `plain_config` values from Step 1 plus any other non-sensitive config
 - Mount as env vars or volume depending on stack convention
 
 **Service**
@@ -111,12 +125,17 @@ For each service in `services`:
 
 Skip if `has_secrets = false`.
 
-Generate `VaultConnection`, `VaultAuth`, `VaultStaticSecret` CRs:
+**Resolve mount path** from `vault_mount_mode`:
+- `vault_mount_mode = new` → mount path: `kv/novlok/<project>/`; **generate Crossplane Vault mount CR** for this project
+- `vault_mount_mode = default` → mount path: `<vault_mount_path>/<project>/`; **skip Crossplane Vault mount CR** (mount already exists)
+
+Generate `VaultConnection`, `VaultAuth`, `VaultStaticSecret` CRs covering only `confidential_secrets` from Step 1:
 - `vault_address` from runtime input (helm: `{{ .Values.vault.address }}`)
 - Auth method: kubernetes, role: `<project>`, service account: `<project>-sa`
-- Mount path: `kv/novlok/<project>/`
+- `VaultStaticSecret.spec.mount`: KV engine name from the resolved mount path (e.g. `kv`)
+- `VaultStaticSecret.spec.path`: path within the mount (e.g. `novlok/<project>` or `<vault_mount_path>/<project>`)
 
-Also generate Crossplane Vault CRs (mount path, user, policy).
+Also generate Crossplane Vault user and policy CRs (always, regardless of mount mode).
 
 Output path:
 - `helm`: `helm/templates/vault/`
