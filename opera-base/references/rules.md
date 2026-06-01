@@ -383,6 +383,7 @@ workflow:
 ### `build:app` job — `moby/buildkit:rootless`
 
 Docker image builds use `moby/buildkit:rootless` (rootless BuildKit, no Docker-in-Docker socket required).
+**Never use `docker:*` images (including `docker:27`, `docker:dind`, etc.) — the only accepted build image is `moby/buildkit:rootless`.**
 
 ```yaml
 build:app:
@@ -679,7 +680,8 @@ helm/
     ├── cilium/
     │   └── networkpolicy.yaml
     ├── prometheus/
-    │   ├── servicemonitor.yaml
+    │   └── servicemonitor.yaml
+    ├── otel/
     │   └── instrumentation.yaml
     ├── alertmanager/
     │   └── prometheusrule.yaml
@@ -826,6 +828,8 @@ kubernetes/
 │   │   └── kustomization.yaml
 │   ├── prometheus/
 │   │   ├── servicemonitor.yaml
+│   │   └── kustomization.yaml
+│   ├── otel/
 │   │   ├── instrumentation.yaml
 │   │   └── kustomization.yaml
 │   ├── alertmanager/

@@ -183,9 +183,13 @@ Add the stack-specific auto-injection annotation to every **Deployment** (from S
 
 Use the CR templates from `references/rules.md` Rule 3b.
 
-Output path:
-- `helm`: `helm/templates/prometheus/` (ServiceMonitor + Instrumentation)
+Output path — ServiceMonitor:
+- `helm`: `helm/templates/prometheus/`
 - `kustomize`: `kubernetes/base/prometheus/` + `kustomization.yaml`
+
+Output path — Instrumentation CR:
+- `helm`: `helm/templates/otel/`
+- `kustomize`: `kubernetes/base/otel/` + `kustomization.yaml`
 
 > Prerequisite: OpenTelemetry Operator must be running. Flag in output summary if cluster state is unknown.
 
@@ -356,7 +360,7 @@ Adapt per stack:
 - `APP_IMAGE`: `<image_registry>`
 - `workflow.rules`: skip changes to manifests dirs
 
-The `build:app` job **must** use `moby/buildkit:rootless` — use the exact template from `references/rules.md` Rule 8 (`build:app` section). Do not use `docker:dind`, `docker build`, or any Docker-in-Docker approach.
+The `build:app` job **must** use `moby/buildkit:rootless` — use the exact template from `references/rules.md` Rule 8 (`build:app` section). Do not use `docker:dind`, `docker:27`, any `docker:*` image, `docker build`, or any Docker-in-Docker approach.
 
 When `stack = react`, set `--local dockerfile=docker-build` in the `buildctl-daemonless.sh` command (Dockerfile is at `docker-build/Dockerfile`, not project root). Build context stays `--local context=.`. See Rule 8 React variant.
 
@@ -394,7 +398,8 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `helm/templates/vault/` | Created / Skipped | Secrets found: yes/no |
 | `helm/templates/apisix/` | Created | Route + N upstreams |
 | `helm/templates/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
-| `helm/templates/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.enabled) + Instrumentation CR (if otel.enabled) |
+| `helm/templates/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
+| `helm/templates/otel/` | Created / Skipped | Instrumentation CR (if otel.autoinstrumentation.enable) |
 | `helm/templates/alertmanager/` | Created | — |
 | `helm/templates/autoscaling/` | Created / Skipped | HPA or KEDA ScaledObject (if autoscaling.enabled) |
 | `helm/templates/cilium/` | Created | mTLS ingress+egress; SPIRE required |
@@ -413,7 +418,8 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `kubernetes/base/vault/` | Created / Skipped | Secrets found: yes/no |
 | `kubernetes/base/apisix/` | Created | Route + N upstreams |
 | `kubernetes/base/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
-| `kubernetes/base/prometheus/` | Created / Already existed | ServiceMonitor + Instrumentation CR (stack-specific) |
+| `kubernetes/base/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
+| `kubernetes/base/otel/` | Created / Skipped | Instrumentation CR (stack-specific, if otel.autoinstrumentation.enable) |
 | `kubernetes/base/alertmanager/` | Created | — |
 | `kubernetes/base/autoscaling/` | Created / Skipped | HPA or KEDA ScaledObject (if autoscaling.enabled) |
 | `kubernetes/base/cilium/` | Created | mTLS ingress+egress; SPIRE required |
