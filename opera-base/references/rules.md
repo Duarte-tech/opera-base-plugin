@@ -679,9 +679,12 @@ helm/
     ├── cilium/
     │   └── networkpolicy.yaml
     ├── prometheus/
-    │   └── servicemonitor.yaml
+    │   ├── servicemonitor.yaml
+    │   └── instrumentation.yaml
     ├── alertmanager/
     │   └── prometheusrule.yaml
+    ├── autoscaling/
+    │   └── autoscaling.yaml
     └── crossplane/
         ├── cloudflare/
         │   └── records.yaml
@@ -823,9 +826,13 @@ kubernetes/
 │   │   └── kustomization.yaml
 │   ├── prometheus/
 │   │   ├── servicemonitor.yaml
+│   │   ├── instrumentation.yaml
 │   │   └── kustomization.yaml
 │   ├── alertmanager/
 │   │   ├── prometheusrule.yaml
+│   │   └── kustomization.yaml
+│   ├── autoscaling/
+│   │   ├── autoscaling.yaml
 │   │   └── kustomization.yaml
 │   └── crossplane/
 │       ├── cloudflare/
