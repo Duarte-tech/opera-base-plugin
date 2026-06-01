@@ -214,18 +214,21 @@ Output path:
 
 ### Step 8b — Autoscaling (HPA or KEDA)
 
-Skip if `autoscaling.enabled = false` (default).
+**Always generate.** Do not skip and do not ask the user to choose the type — it is controlled by `autoscaling.type` in `values.yaml` (default: `hpa`). The `autoscaling.enabled` flag in `values.yaml` gates whether the autoscaler runs at runtime, but the manifest files are always written.
 
-Ask the user: **HPA** (standard Kubernetes) or **KEDA** (event-driven)?  
-If no preference, default to `hpa`.
+Generate one file per service containing **both** HPA and KEDA templates, each wrapped in the appropriate conditional:
 
-Generate one autoscaler resource per service:
-- `hpa`: `autoscaling/v2 HorizontalPodAutoscaler`
-- `keda`: `keda.sh/v1alpha1 ScaledObject`
+```yaml
+{{- if eq .Values.autoscaling.type "hpa" }}
+# HorizontalPodAutoscaler manifest
+{{- else if eq .Values.autoscaling.type "keda" }}
+# ScaledObject manifest
+{{- end }}
+```
 
-Both use `autoscaling.minReplicas`, `autoscaling.maxReplicas`, `autoscaling.cpu.targetUtilization`, `autoscaling.memory.targetUtilization` from values.
+Both templates use `autoscaling.minReplicas`, `autoscaling.maxReplicas`, `autoscaling.cpu.targetUtilization`, `autoscaling.memory.targetUtilization` from values.
 
-Helm: wrap in `{{- if .Values.autoscaling.enabled }}` with inner `{{- if eq .Values.autoscaling.type "hpa" }}` / `{{- else if eq .Values.autoscaling.type "keda" }}`.
+Kustomize: hardcode both templates in the same file separated by `---`; use comments to mark which block corresponds to HPA and which to KEDA — the operator choice is made by removing or commenting the unused block.
 
 Output path:
 - `helm`: `helm/templates/autoscaling/`
@@ -233,8 +236,8 @@ Output path:
 
 Use CR templates from `references/rules.md` Rule 12.
 
-> Note: when autoscaling is enabled, `replicaCount` acts only as the initial replica count.
-> Flag the prerequisite (metrics-server for HPA, KEDA operator for KEDA) in the output summary.
+> Note: `replicaCount` acts only as the initial replica count when autoscaling is enabled.
+> Flag prerequisites in the output summary: metrics-server for HPA, KEDA operator for KEDA.
 
 ---
 
@@ -406,7 +409,7 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `helm/templates/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
 | `helm/templates/otel/` | Created / Skipped | Instrumentation CR (if otel.autoinstrumentation.enable) |
 | `helm/templates/alertmanager/` | Created | — |
-| `helm/templates/autoscaling/` | Created / Skipped | HPA or KEDA ScaledObject (if autoscaling.enabled) |
+| `helm/templates/autoscaling/` | Created | HPA + KEDA templates; active type set by `autoscaling.type` in values.yaml |
 | `helm/templates/cilium/` | Created | mTLS ingress+egress; SPIRE required |
 | `argocd/` | Created | Application (multi-source) + Secret |
 | `Dockerfile` / `docker-build/Dockerfile` | Created | React → `docker-build/Dockerfile`; all other stacks → project root |
@@ -426,7 +429,7 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `kubernetes/base/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
 | `kubernetes/base/otel/` | Created / Skipped | Instrumentation CR (stack-specific, if otel.autoinstrumentation.enable) |
 | `kubernetes/base/alertmanager/` | Created | — |
-| `kubernetes/base/autoscaling/` | Created / Skipped | HPA or KEDA ScaledObject (if autoscaling.enabled) |
+| `kubernetes/base/autoscaling/` | Created | HPA + KEDA templates; active type set by `autoscaling.type` in values.yaml |
 | `kubernetes/base/cilium/` | Created | mTLS ingress+egress; SPIRE required |
 | `kubernetes/overlays/dev|qua|prd/` | Created | replicas patch + image tag placeholder |
 | `argocd/` | Created | Application (single source, overlay path) + Secret |
