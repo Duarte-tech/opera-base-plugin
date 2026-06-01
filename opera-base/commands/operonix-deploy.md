@@ -56,6 +56,7 @@ helm/<project>/
     ├── namespace.yaml
     ├── serviceaccount.yaml
     ├── app/              Deployment (securityContext), Service, ConfigMap
+    ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret (if secrets found)
     ├── apisix/           ApisixRoute, ApisixUpstream
     ├── alertmanager/     PrometheusRule
     ├── prometheus/       ServiceMonitor (if prometheus.serviceMonitor.enable)
@@ -85,6 +86,7 @@ kubernetes/
 │   ├── namespace.yaml
 │   ├── serviceaccount.yaml
 │   ├── app/              Deployment (securityContext), Service, ConfigMap
+│   ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret (if secrets found)
 │   ├── apisix/           ApisixRoute, ApisixUpstream
 │   ├── alertmanager/     PrometheusRule
 │   ├── prometheus/       ServiceMonitor (if prometheus.serviceMonitor.enable)

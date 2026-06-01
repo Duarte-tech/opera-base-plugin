@@ -64,6 +64,8 @@ Before generating any `Secret` manifest:
 
 Reference CR structure (verify version against cluster):
 
+> `spec.mount` and `spec.path` in `VaultStaticSecret` depend on `vault_mount_mode` — see the mount path resolution table below. The values shown here (`mount: kv`, `path: novlok/<project>`) apply to `vault_mount_mode = new`.
+
 ```yaml
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultConnection
@@ -93,9 +95,9 @@ metadata:
   namespace: <project>
 spec:
   vaultAuthRef: <project>-vault-auth
-  mount: kv
+  mount: kv                  # vault_mount_mode=new: "kv"; default: KV engine from vault_mount_path
   type: kv-v2
-  path: novlok/<project>
+  path: novlok/<project>     # vault_mount_mode=new: "novlok/<project>"; default: "<vault_mount_path>/<project>"
   destination:
     name: <project>-secrets
     create: true
@@ -1004,13 +1006,14 @@ autoscaling:
 ```
 
 **Helm template conditional:**
+
+The autoscaling file is always generated. `autoscaling.type` selects which autoscaler is rendered; `autoscaling.enabled` in `values.yaml` is available for runtime documentation but does not gate the template.
+
 ```yaml
-{{- if .Values.autoscaling.enabled }}
 {{- if eq .Values.autoscaling.type "hpa" }}
 # HPA manifest
 {{- else if eq .Values.autoscaling.type "keda" }}
 # ScaledObject manifest
-{{- end }}
 {{- end }}
 ```
 
