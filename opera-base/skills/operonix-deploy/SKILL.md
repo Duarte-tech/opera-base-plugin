@@ -320,12 +320,29 @@ Generate based on detected `stack`. Use the canonical patterns from `references/
 
 | Stack | Builder image | Runtime image |
 |-------|--------------|---------------|
-| `nodejs` | `node:24-alpine` | `node:24-alpine` (standalone runner) |
+| `react` | `node:24-alpine` | `nginxinc/nginx-unprivileged:alpine3.23-otel` |
+| `nextjs` | `node:24-alpine` | `node:24-alpine` (standalone runner) |
 | `go` | `golang:1.26.3-alpine` | `scratch` |
 | `java` | `maven:3.9-eclipse-temurin-21` | `eclipse-temurin:21-jre-alpine` |
 | `python` | `python:3.12-slim` | `python:3.12-slim` |
 
-For Node.js projects with Prisma: include `openssl` apk package and copy Prisma engine layers.
+**React sub-stack detection** (auto, before asking):
+
+| Condition | Sub-stack |
+|-----------|-----------|
+| `package.json` has `"next"` in dependencies | `nextjs` |
+| `package.json` has `"react"` + (`vite.config.*` present OR `"vite"` in devDependencies), no `"next"` | `react` |
+
+**Keycloak detection** (`has_keycloak`): scan `package.json` dependencies and devDependencies for any of: `keycloak-js`, `@react-keycloak/web`, `@react-keycloak/native`. Also scan source files for `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID` appearing as literal placeholder strings or as `VITE_KEYCLOAK_*` env var references — either pattern triggers `has_keycloak = true`.
+
+**Dockerfile path for React projects:** always generate as `docker-build/Dockerfile` (not at project root). Use the canonical pattern from `references/rules.md` Rule 9.
+
+If `stack = react` and `has_keycloak = true`:
+- Add placeholder `ENV` directives in the builder stage (`VITE_KEYCLOAK_URL="KEYCLOAK_URL"`, etc.) so Vite bakes the literal strings into the bundle
+- Generate `docker-build/entrypoint.sh` (see Rule 9) — replaces placeholders with real env var values at container startup via `sed`, then renders `nginx.conf` from template via `envsubst`
+- Use `COPY --chmod=755 docker-build/entrypoint.sh /entrypoint.sh` in the Dockerfile and set `ENTRYPOINT ["/entrypoint.sh"]`
+
+For Next.js projects with Prisma: include `openssl` apk package and copy Prisma engine layers.
 
 ---
 
@@ -338,6 +355,10 @@ Adapt per stack:
 - Lint and test jobs (see stack table in Rule 8)
 - `APP_IMAGE`: `<image_registry>`
 - `workflow.rules`: skip changes to manifests dirs
+
+The `build:app` job **must** use `moby/buildkit:rootless` — use the exact template from `references/rules.md` Rule 8 (`build:app` section). Do not use `docker:dind`, `docker build`, or any Docker-in-Docker approach.
+
+When `stack = react`, set `--local dockerfile=docker-build` in the `buildctl-daemonless.sh` command (Dockerfile is at `docker-build/Dockerfile`, not project root). Build context stays `--local context=.`. See Rule 8 React variant.
 
 CI image tag patch job (`update-k8s-tag`) — depends on `output_format`:
 - `helm`: `yq e '.image.tag = "<tag>"' -i values-<env>.yaml` on app repo branch (`dev` → `values-dev.yaml`, etc.)
@@ -378,8 +399,9 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `helm/templates/autoscaling/` | Created / Skipped | HPA or KEDA ScaledObject (if autoscaling.enabled) |
 | `helm/templates/cilium/` | Created | mTLS ingress+egress; SPIRE required |
 | `argocd/` | Created | Application (multi-source) + Secret |
-| `Dockerfile` | Created | Stack: <stack> |
-| `.gitlab-ci.yml` | Created | Stack: <stack>; tag via yq |
+| `Dockerfile` / `docker-build/Dockerfile` | Created | React → `docker-build/Dockerfile`; all other stacks → project root |
+| `docker-build/entrypoint.sh` | Created / Skipped | React + Keycloak only; replaces KEYCLOAK_URL/REALM/CLIENT_ID/API_URL placeholders at startup |
+| `.gitlab-ci.yml` | Created | Stack: <stack>; tag via yq; React uses `--local dockerfile=docker-build` |
 | `version.yaml` | Created / Already existed | — |
 
 **If `output_format = kustomize`:**
@@ -397,8 +419,9 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `kubernetes/base/cilium/` | Created | mTLS ingress+egress; SPIRE required |
 | `kubernetes/overlays/dev|qua|prd/` | Created | replicas patch + image tag placeholder |
 | `argocd/` | Created | Application (single source, overlay path) + Secret |
-| `Dockerfile` | Created | Stack: <stack> |
-| `.gitlab-ci.yml` | Created | Stack: <stack>; tag via kustomize edit |
+| `Dockerfile` / `docker-build/Dockerfile` | Created | React → `docker-build/Dockerfile`; all other stacks → project root |
+| `docker-build/entrypoint.sh` | Created / Skipped | React + Keycloak only; replaces KEYCLOAK_URL/REALM/CLIENT_ID/API_URL placeholders at startup |
+| `.gitlab-ci.yml` | Created | Stack: <stack>; tag via kustomize edit; React uses `--local dockerfile=docker-build` |
 | `version.yaml` | Created / Already existed | — |
 
 List any secrets moved to Vault.

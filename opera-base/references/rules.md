@@ -380,9 +380,153 @@ workflow:
 | Python | `flake8` / `ruff` | `pytest` |
 | Go | `golangci-lint` | `go test ./...` |
 
+### `build:app` job — `moby/buildkit:rootless`
+
+Docker image builds use `moby/buildkit:rootless` (rootless BuildKit, no Docker-in-Docker socket required).
+
+```yaml
+build:app:
+  stage: build
+  image:
+    name: moby/buildkit:rootless
+    entrypoint: [""]
+  variables:
+    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
+  before_script:
+    - mkdir -p ~/.docker
+    - |
+      printf '{"auths":{"%s":{"username":"%s","password":"%s"}}}' \
+        "$CI_REGISTRY" "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" \
+        > ~/.docker/config.json
+  script:
+    - |
+      buildctl-daemonless.sh build \
+        --frontend dockerfile.v0 \
+        --local context=. \
+        --local dockerfile=. \
+        --output "type=image,name=${APP_IMAGE}:${IMAGE_TAG},push=true" \
+        --opt "platform=linux/amd64,linux/arm64" \
+        --import-cache "type=registry,ref=${APP_IMAGE}:cache" \
+        --export-cache "type=registry,ref=${APP_IMAGE}:cache,mode=max"
+  rules:
+    - if: '$CI_COMMIT_TAG'
+```
+
+**Required CI/CD variables** (set in GitLab project settings — not in `.gitlab-ci.yml`):
+- `CI_REGISTRY`, `CI_REGISTRY_USER`, `CI_REGISTRY_PASSWORD` — provided automatically by GitLab when using the GitLab container registry
+- `APP_IMAGE` — full image path, e.g. `registry.gitlab.com/<group>/<project>/app`
+- `IMAGE_TAG` — set by the `tag:define_tag` job
+
+**React stack (`stack = react`):** the Dockerfile lives in `docker-build/`, so `--local dockerfile` must point to that directory instead of `.`:
+
+```yaml
+  script:
+    - |
+      buildctl-daemonless.sh build \
+        --frontend dockerfile.v0 \
+        --local context=. \
+        --local dockerfile=docker-build \
+        --output "type=image,name=${APP_IMAGE}:${IMAGE_TAG},push=true" \
+        --opt "platform=linux/amd64,linux/arm64" \
+        --import-cache "type=registry,ref=${APP_IMAGE}:cache" \
+        --export-cache "type=registry,ref=${APP_IMAGE}:cache,mode=max"
+```
+
+The build context (`--local context=.`) stays at the project root so all `COPY docker-build/...` paths in the Dockerfile resolve correctly.
+
+**Notes:**
+- `BUILDKITD_FLAGS: --oci-worker-no-process-sandbox` is required for rootless BuildKit inside a container (no `privileged: true` needed)
+- Registry auth is written to `~/.docker/config.json` in `before_script` — BuildKit reads this path automatically
+- Registry layer caching uses `--import-cache` / `--export-cache`; first run is slower (cold cache), subsequent runs are fast
+- Multi-arch is handled natively by BuildKit via `--opt platform=`; no `DOCKER_BUILDX_*` env vars needed
+
 ---
 
 ## 9. Dockerfile patterns
+
+### Stack detection — React vs Next.js
+
+| Condition | Sub-stack |
+|-----------|-----------|
+| `package.json` has `"next"` dependency | `nextjs` |
+| `package.json` has `"react"` + `vite.config.*` present (or `"vite"` in devDependencies), no `"next"` | `react` |
+
+React projects always use **`nginxinc/nginx-unprivileged:alpine3.23-otel`** as the runtime image.
+
+Keycloak detection: check `package.json` for `keycloak-js`, `@react-keycloak/web`, or `@react-keycloak/native` in `dependencies` or `devDependencies`. If found → `has_keycloak = true`.
+
+---
+
+### React / Vite (canonical)
+
+For React projects the `Dockerfile` lives in **`docker-build/Dockerfile`** (together with `entrypoint.sh` when applicable). The build context passed to BuildKit is always the project root (`.`), so all `COPY` paths are relative to the root.
+
+**Without Keycloak** — `docker-build/Dockerfile`:
+
+```dockerfile
+FROM node:24-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM nginxinc/nginx-unprivileged:alpine3.23-otel AS runner
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY docker-build/nginx.conf.template /etc/nginx/nginx.conf.template
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+**With Keycloak** (`has_keycloak = true`) — `docker-build/Dockerfile`:
+
+Vite bakes env vars into the JS bundle at build time. Set literal placeholder strings as ENV values so the bundle contains the placeholder text; the `entrypoint.sh` replaces them at container startup with the real runtime values.
+
+```dockerfile
+FROM node:24-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+ENV VITE_KEYCLOAK_URL="KEYCLOAK_URL"
+ENV VITE_KEYCLOAK_REALM="KEYCLOAK_REALM"
+ENV VITE_KEYCLOAK_CLIENT_ID="KEYCLOAK_CLIENT_ID"
+ENV VITE_API_URL="API_URL"
+RUN npm run build
+
+FROM nginxinc/nginx-unprivileged:alpine3.23-otel AS runner
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY docker-build/nginx.conf.template /etc/nginx/nginx.conf.template
+COPY --chmod=755 docker-build/entrypoint.sh /entrypoint.sh
+EXPOSE 8080
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+Also generate `docker-build/entrypoint.sh`:
+
+```sh
+#!/bin/sh
+sed -i "s|KEYCLOAK_URL|$VITE_KEYCLOAK_URL|g" /usr/share/nginx/html/assets/index*.js
+sed -i "s|KEYCLOAK_REALM|$VITE_KEYCLOAK_REALM|g" /usr/share/nginx/html/assets/index*.js
+sed -i "s|KEYCLOAK_CLIENT_ID|$VITE_KEYCLOAK_CLIENT_ID|g" /usr/share/nginx/html/assets/index*.js
+sed -i "s|API_URL|$VITE_API_URL|g" /usr/share/nginx/html/assets/index*.js
+export OTEL_COLLECTOR_HOST="${OTEL_COLLECTOR_HOST:-otel-collector}"
+export OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-frontend}"
+envsubst '${OTEL_COLLECTOR_HOST} ${OTEL_SERVICE_NAME}' \
+    < /etc/nginx/nginx.conf.template \
+    > /etc/nginx/nginx.conf
+
+exec "$@"
+```
+
+> All files under `docker-build/` (`Dockerfile`, `entrypoint.sh`, `nginx.conf.template`) are referenced from the **project root** in `COPY` instructions because the BuildKit context is `.`.
+
+> `--chmod=755` on the `COPY` requires BuildKit (always available in the CI pipeline via `moby/buildkit:rootless`). The image runs as UID 101 (`nginx`); the script must be executable before switching users.
+
+> The `VITE_API_URL` placeholder is included by default alongside the Keycloak vars. Remove it if the project does not use a `VITE_API_URL` env var.
+
+---
 
 ### Go (multi-stage — canonical)
 

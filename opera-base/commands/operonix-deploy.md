@@ -67,7 +67,10 @@ helm/<project>/
 argocd/
 ├── application-<project>.yaml   (multi-source: chart repo + values.yaml + values-<env>.yaml)
 └── secret-<project>-repo.yaml
-Dockerfile
+Dockerfile                       (non-React stacks only)
+docker-build/
+├── Dockerfile                   (React only)
+└── entrypoint.sh                (React + Keycloak only)
 .gitlab-ci.yml
 version.yaml                     (created only if absent)
 ```
@@ -96,7 +99,10 @@ kubernetes/
 argocd/
 ├── application-<project>.yaml   (single source: overlays/<env>)
 └── secret-<project>-repo.yaml
-Dockerfile
+Dockerfile                       (non-React stacks only)
+docker-build/
+├── Dockerfile                   (React only)
+└── entrypoint.sh                (React + Keycloak only)
 .gitlab-ci.yml
 version.yaml                     (created only if absent)
 ```
