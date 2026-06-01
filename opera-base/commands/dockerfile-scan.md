@@ -1,47 +1,47 @@
 ---
 name: dockerfile-scan
-description: Scans a Dockerfile (and optionally a built image) with Trivy for misconfigurations and vulnerabilities.
+description: Scans the project filesystem with Trivy (misconfig + vuln) and outputs a GitLab Code Quality JSON report.
 allowed-tools: Bash, Read, Glob
 ---
 
 # /opera-base:dockerfile-scan
 
-Runs a Trivy security scan against a project's Dockerfile and, optionally, a built container image.
+Runs `trivy filesystem` against the project directory, scanning for Dockerfile misconfigurations and dependency vulnerabilities. Outputs a GitLab Code Quality JSON report (`gl-codeclimate-fs.json`).
 
 ## Usage
 
 ```
 /opera-base:dockerfile-scan
-/opera-base:dockerfile-scan --path <dockerfile_path>
-/opera-base:dockerfile-scan --image <image_name>
-/opera-base:dockerfile-scan --path <dockerfile_path> --image <image_name> --severity CRITICAL,HIGH,MEDIUM
+/opera-base:dockerfile-scan --output <file> --severity CRITICAL,HIGH,MEDIUM
 ```
 
 ## Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--path <path>` | auto-detect | Path to the Dockerfile to scan for misconfigurations |
-| `--image <image>` | — | Built image name/tag to scan for OS and library vulnerabilities |
+| `--output <file>` | `gl-codeclimate-fs.json` | Output file for the GitLab Code Quality report |
 | `--severity <levels>` | `HIGH,CRITICAL` | Comma-separated severity levels to report |
 
-## Auto-detection order
+## Command used
 
-If `--path` is not provided:
-1. `docker-build/Dockerfile` (React/Vite projects)
-2. `Dockerfile` at project root
+```bash
+trivy filesystem \
+  --scanners misconfig,vuln \
+  --exit-code 0 \
+  --format template \
+  --template "@/contrib/gitlab-codequality.tpl" \
+  -o gl-codeclimate-fs.json \
+  .
+```
 
 ## Output
 
-Structured report grouped by severity (CRITICAL → HIGH → MEDIUM → LOW):
-- Rule ID and description
-- File and line number (config scan)
-- Remediation hint
-
-Ends with a pass/fail summary: **FAIL** if any CRITICAL finding is present.
+- `gl-codeclimate-fs.json` — GitLab Code Quality artifact, upload in CI as `reports: codequality`
+- Terminal summary grouped by severity with remediation hints
+- Pass/fail verdict: **FAIL** if any CRITICAL finding
 
 ## Dependencies
 
-- Trivy must be installed: `trivy --version`  
+- Trivy `≥ 0.69.3` must be installed: `trivy --version`  
   Install: https://aquasecurity.github.io/trivy/latest/getting-started/installation/
 - Skill: `skills/dockerfile-scan/SKILL.md`

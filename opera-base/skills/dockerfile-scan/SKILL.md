@@ -1,6 +1,6 @@
 ---
 name: dockerfile-scan
-description: Scans a Dockerfile and optionally a built image with Trivy for misconfigurations and vulnerabilities. Triggers on "scan dockerfile", "validate dockerfile", "trivy scan", "/opera-base:dockerfile-scan".
+description: Scans the project filesystem (misconfig + vuln) with Trivy, outputting a GitLab Code Quality report. Triggers on "scan dockerfile", "validate dockerfile", "trivy scan", "/opera-base:dockerfile-scan".
 ---
 
 # Skill: dockerfile-scan
@@ -9,7 +9,7 @@ description: Scans a Dockerfile and optionally a built image with Trivy for misc
 
 Fire when the user asks to:
 - scan or validate a Dockerfile
-- run a Trivy scan on a Dockerfile or image
+- run a Trivy filesystem scan
 - check a Dockerfile for security issues
 - `/opera-base:dockerfile-scan`
 
@@ -19,9 +19,8 @@ Fire when the user asks to:
 
 | Input | Source |
 |-------|--------|
-| `dockerfile_path` | `--path` argument or auto-detected |
-| `image_name` | `--image` argument (optional) |
-| `severity` | `--severity` argument (default: `HIGH,CRITICAL`) |
+| `output_file` | `--output` flag (default: `gl-codeclimate-fs.json`) |
+| `severity` | `--severity` flag (default: `HIGH,CRITICAL`) |
 
 ---
 
@@ -33,65 +32,48 @@ Fire when the user asks to:
 trivy --version
 ```
 
-If the command fails (not found), stop and instruct the user to install Trivy:
+If not found, stop and instruct the user to install:
 > Trivy is not installed. Install it from: https://aquasecurity.github.io/trivy/latest/getting-started/installation/
 
-Do not proceed until Trivy is available.
-
-> **Version alignment:** the CI pipeline uses `aquasec/trivy:0.69.3`. For consistent results between local scan and CI, ensure the locally installed version is `≥ 0.69.3`. Warn the user if the detected version is older.
+> **Version alignment:** the CI pipeline uses `aquasec/trivy:0.69.3`. Warn the user if the detected local version is older.
 
 ---
 
-### Step 2 — Resolve Dockerfile path
+### Step 2 — Run filesystem scan
 
-If `--path` was not provided, auto-detect in this order:
-1. `docker-build/Dockerfile` — present in React/Vite projects
-2. `Dockerfile` at the project root
-
-Confirm the detected path with the user before running any scan.
-
-If no Dockerfile is found, stop and ask the user to provide `--path`.
-
----
-
-### Step 3 — Config scan (always run)
-
-Scans the Dockerfile itself for misconfigurations (root USER, ADD instead of COPY, latest tags, exposed secrets, etc.):
+Scans the project filesystem for misconfigurations (Dockerfile issues, IaC problems) and vulnerabilities (dependency manifests). Run from the project root:
 
 ```bash
-trivy config --exit-code 0 --severity <severity> --format table <dockerfile_path>
+trivy filesystem \
+  --scanners misconfig,vuln \
+  --exit-code 0 \
+  --format template \
+  --template "@/contrib/gitlab-codequality.tpl" \
+  -o gl-codeclimate-fs.json \
+  .
 ```
 
-Capture the full output.
+- `--scanners misconfig,vuln`: catches Dockerfile misconfigs (root USER, ADD vs COPY, latest tags) and dependency CVEs
+- `--format template --template "@/contrib/gitlab-codequality.tpl"`: outputs GitLab Code Quality JSON, uploadable as a CI artifact
+- `-o gl-codeclimate-fs.json`: output file (default name aligns with GitLab CI artifact convention)
+- `.`: scan the entire project directory from the current working directory
 
 ---
 
-### Step 4 — Image scan (only if `--image` provided)
+### Step 3 — Parse and present results
 
-Scans a built container image for OS package and library vulnerabilities:
+Read `gl-codeclimate-fs.json` and present findings grouped by severity (CRITICAL → HIGH → MEDIUM → LOW):
 
-```bash
-trivy image --exit-code 0 --severity <severity> --format table <image_name>
-```
-
-If `--image` was not provided, skip this step. Do not build or pull images on behalf of the user.
-
----
-
-### Step 5 — Parse and present results
-
-Group findings from Steps 3 and 4 by severity in descending order: **CRITICAL → HIGH → MEDIUM → LOW**.
-
-For each finding, show:
-- **Severity** (coloured label if terminal supports it)
+For each finding show:
+- **Severity**
 - **Rule ID** (e.g. `DS002`, `AVD-DS-0001`)
 - **Description** — what the issue is
-- **Location** — file and line number (config scan) or package name and version (image scan)
-- **Remediation hint** — one-line fix suggestion
+- **Location** — file and line number
+- **Remediation hint**
 
 ---
 
-### Step 6 — Summary
+### Step 4 — Summary
 
 Print a summary table:
 
@@ -106,13 +88,14 @@ Print a summary table:
 - `PASS` — no CRITICAL findings
 - `FAIL` — one or more CRITICAL findings present
 
-Flag any finding that maps to the Dockerfile patterns in `references/rules.md` Rule 9 (e.g. running as root conflicts with Rule 10 security context requirements).
+Flag any finding that maps to the Dockerfile patterns in `references/rules.md` Rule 9 or the securityContext requirements in Rule 10.
+
+Inform the user that `gl-codeclimate-fs.json` can be uploaded as a GitLab CI artifact under `reports: codequality`.
 
 ---
 
 ## Constraints
 
-- Always use `--exit-code 0` — never `--exit-code 1`, which would terminate the shell session
-- Never build or pull images; `trivy image` only works on already-available images
-- `trivy config` scans the Dockerfile file itself; `trivy image` scans a runtime image — they are complementary, not interchangeable
-- Default severity filter is `HIGH,CRITICAL`; respect the user's `--severity` override
+- Always use `--exit-code 0` — never `--exit-code 1`
+- Default output file is `gl-codeclimate-fs.json`; respect the user's `--output` override
+- The `@/contrib/gitlab-codequality.tpl` template is bundled with the Trivy binary; no extra download needed
