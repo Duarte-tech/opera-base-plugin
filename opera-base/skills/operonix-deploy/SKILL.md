@@ -193,7 +193,8 @@ Helm: wrap the whole resource in `{{- if .Values.prometheus.serviceMonitor.enabl
 
 Generate the `opentelemetry.io/v1alpha1 Instrumentation` CR:
 - Endpoint: `otel_endpoint` from runtime input (helm: `{{ .Values.otel.endpoint }}`)
-- Include **only** the language block matching the project stack; remove the others
+- **Before generating**, fetch the latest release tag: `GET https://api.github.com/repos/open-telemetry/opentelemetry-operator/releases/latest` → use `.tag_name` for all image tags
+- Include **all four language blocks** (nodejs, java, python, go) — the operator selects the right one via the pod annotation
 - Helm: wrap in `{{- if .Values.otel.autoinstrumentation.enable }}`
 
 Add the stack-specific auto-injection annotation to every **Deployment** (from Step 3):

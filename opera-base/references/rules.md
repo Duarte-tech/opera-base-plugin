@@ -148,6 +148,12 @@ Generate only if `otel.autoinstrumentation.enable = true` (default: true).
 
 Uses the **OpenTelemetry Operator** `Instrumentation` CR to auto-inject the SDK into pods — no manual SDK wiring required. The operator injects the agent via the pod annotation.
 
+> **Before generating:** fetch the latest release tag from the opentelemetry-operator repo and use it for all image tags:
+> ```
+> GET https://api.github.com/repos/open-telemetry/opentelemetry-operator/releases/latest → .tag_name
+> ```
+> Include **all four language blocks** — the operator picks the right one based on the pod annotation.
+
 ```yaml
 apiVersion: opentelemetry.io/v1alpha1
 kind: Instrumentation
@@ -163,17 +169,15 @@ spec:
   sampler:
     type: parentbased_traceidratio
     argument: "1"
-  nodejs:                        # include only the block matching the project stack
-    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-nodejs:latest
+  nodejs:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-nodejs:<fetched_tag>
   java:
-    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:latest
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:<fetched_tag>
   python:
-    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:latest
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:<fetched_tag>
   go:
-    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-go:latest
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-go:<fetched_tag>
 ```
-
-> Include **only** the language block that matches the project stack. Remove the others.
 
 **Deployment annotation** (added to every Deployment so the operator injects the agent):
 
