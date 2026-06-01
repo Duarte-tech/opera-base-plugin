@@ -368,6 +368,11 @@ CI image tag patch job (`update-k8s-tag`) — depends on `output_format`:
 - `helm`: `yq e '.image.tag = "<tag>"' -i values-<env>.yaml` on app repo branch (`dev` → `values-dev.yaml`, etc.)
 - `kustomize`: `kustomize edit set image <registry>=<registry>:<tag>` on `kubernetes/overlays/<env>/kustomization.yaml`
 
+The `git commit` line in this job **must** use YAML single-quote wrapping to prevent validators from interpreting `ci:` as a YAML mapping key:
+```yaml
+    - 'git commit -m "ci: update k8s tag to ${IMAGE_TAG}"'
+```
+
 ---
 
 ### Step 14 — `version.yaml`

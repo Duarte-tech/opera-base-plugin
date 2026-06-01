@@ -58,7 +58,8 @@ helm/<project>/
     ├── app/              Deployment (securityContext), Service, ConfigMap
     ├── apisix/           ApisixRoute, ApisixUpstream
     ├── alertmanager/     PrometheusRule
-    ├── prometheus/       ServiceMonitor (if prometheus.enabled) + Instrumentation CR (if otel.enabled)
+    ├── prometheus/       ServiceMonitor (if prometheus.serviceMonitor.enable)
+    ├── otel/             Instrumentation CR (if otel.autoinstrumentation.enable)
     ├── autoscaling/      HPA or KEDA ScaledObject (if autoscaling.enabled)
     ├── cilium/           CiliumNetworkPolicy (mTLS ingress+egress)
     └── crossplane/
@@ -86,7 +87,8 @@ kubernetes/
 │   ├── app/              Deployment (securityContext), Service, ConfigMap
 │   ├── apisix/           ApisixRoute, ApisixUpstream
 │   ├── alertmanager/     PrometheusRule
-│   ├── prometheus/       ServiceMonitor (if prometheus.enabled) + Instrumentation CR (if otel.enabled)
+│   ├── prometheus/       ServiceMonitor (if prometheus.serviceMonitor.enable)
+│   ├── otel/             Instrumentation CR (if otel.autoinstrumentation.enable)
 │   ├── autoscaling/      HPA or KEDA ScaledObject (if autoscaling.enabled)
 │   ├── cilium/           CiliumNetworkPolicy (mTLS ingress+egress)
 │   └── crossplane/

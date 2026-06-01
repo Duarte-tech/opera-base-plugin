@@ -441,6 +441,27 @@ The build context (`--local context=.`) stays at the project root so all `COPY d
 - Registry layer caching uses `--import-cache` / `--export-cache`; first run is slower (cold cache), subsequent runs are fast
 - Multi-arch is handled natively by BuildKit via `--opt platform=`; no `DOCKER_BUILDX_*` env vars needed
 
+### `update-k8s-tag` job
+
+Patches the image tag in the manifest repo after a successful build. The `git commit` line **must** be wrapped in YAML single quotes — without them, `ci:` is parsed as a YAML mapping key by schema validators.
+
+```yaml
+update-k8s-tag:
+  stage: deploy
+  script:
+    - git config user.email "ci@novlok.co"
+    - git config user.name "GitLab CI"
+    # helm output_format:
+    - yq e '.image.tag = strenv(IMAGE_TAG)' -i values-${CI_COMMIT_REF_NAME}.yaml
+    # kustomize output_format (use instead of yq line above):
+    # - kustomize edit set image ${APP_IMAGE}=${APP_IMAGE}:${IMAGE_TAG}
+    - git add -A
+    - 'git commit -m "ci: update k8s tag to ${IMAGE_TAG}"'
+    - git push
+  rules:
+    - if: '$CI_COMMIT_TAG'
+```
+
 ---
 
 ## 9. Dockerfile patterns
