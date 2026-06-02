@@ -1,12 +1,12 @@
 ---
 name: dockerfile-scan
-description: Scans the project filesystem with Trivy (misconfig + vuln) and outputs a GitLab Code Quality JSON report.
+description: Scans the project filesystem with Trivy (misconfig + vuln + secret) and outputs a GitLab Code Quality JSON report.
 allowed-tools: Bash, Read, Glob
 ---
 
 # /opera-base:dockerfile-scan
 
-Runs `trivy filesystem` against the project directory, scanning for Dockerfile misconfigurations and dependency vulnerabilities. Outputs a GitLab Code Quality JSON report (`gl-codeclimate-fs.json`).
+Runs `trivy filesystem` against the project directory, scanning for Dockerfile misconfigurations, dependency vulnerabilities, and hardcoded secrets. Outputs a GitLab Code Quality JSON report (`gl-codeclimate-fs.json`).
 
 ## Usage
 
@@ -26,7 +26,7 @@ Runs `trivy filesystem` against the project directory, scanning for Dockerfile m
 
 ```bash
 trivy filesystem \
-  --scanners misconfig,vuln \
+  --scanners misconfig,vuln,secret \
   --exit-code 0 \
   --format template \
   --template "@/contrib/gitlab-codequality.tpl" \
@@ -34,11 +34,19 @@ trivy filesystem \
   .
 ```
 
+## What is scanned
+
+| Scanner | What it finds |
+|---------|---------------|
+| `misconfig` | Dockerfile issues (root USER, ADD vs COPY, latest tags) and IaC misconfigurations |
+| `vuln` | CVEs in dependency manifests (package.json, pom.xml, requirements.txt, etc.) |
+| `secret` | Hardcoded credentials, API keys, and tokens in source files |
+
 ## Output
 
 - `gl-codeclimate-fs.json` — GitLab Code Quality artifact, upload in CI as `reports: codequality`
-- Terminal summary grouped by severity with remediation hints
-- Pass/fail verdict: **FAIL** if any CRITICAL finding
+- Terminal summary grouped by scanner type and severity
+- Pass/fail verdict: **FAIL** if any CRITICAL finding or any secret detected
 
 ## Dependencies
 
