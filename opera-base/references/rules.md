@@ -150,10 +150,16 @@ Generate only if `otel.autoinstrumentation.enable = true` (default: true).
 
 Uses the **OpenTelemetry Operator** `Instrumentation` CR to auto-inject the SDK into pods — no manual SDK wiring required. The operator injects the agent via the pod annotation.
 
-> **Before generating:** fetch the latest release tag from the opentelemetry-operator repo and use it for all image tags:
+> **Before generating:** fetch per-language versions from the operator's `versions.txt` — each language has its own SDK version independent from the operator release:
 > ```
-> GET https://api.github.com/repos/open-telemetry/opentelemetry-operator/releases/latest → .tag_name
+> GET https://raw.githubusercontent.com/open-telemetry/opentelemetry-operator/main/versions.txt
 > ```
+> Parse the value for each key (format: `key=value`, one per line):
+> - `autoinstrumentation-nodejs` → `<nodejs_version>`
+> - `autoinstrumentation-java` → `<java_version>`
+> - `autoinstrumentation-python` → `<python_version>`
+> - `autoinstrumentation-go` → `<go_version>`
+>
 > Include **all four language blocks** — the operator picks the right one based on the pod annotation.
 
 ```yaml
@@ -172,13 +178,13 @@ spec:
     type: parentbased_traceidratio
     argument: "1"
   nodejs:
-    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-nodejs:<fetched_tag>
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-nodejs:<nodejs_version>
   java:
-    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:<fetched_tag>
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:<java_version>
   python:
-    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:<fetched_tag>
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:<python_version>
   go:
-    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-go:<fetched_tag>
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-go:<go_version>
 ```
 
 **Deployment annotation** (added to every Deployment so the operator injects the agent):
@@ -318,11 +324,11 @@ spec:
         io.kubernetes.pod.namespace: <project>
     authentication:
       mode: required
-  # Allow egress to kube-dns
+  # Allow egress to CoreDNS
   - toEndpoints:
     - matchLabels:
         k8s:io.kubernetes.pod.namespace: kube-system
-        k8s:k8s-app: kube-dns
+        k8s:k8s-app: coredns
     toPorts:
     - ports:
       - port: "53"
@@ -335,6 +341,85 @@ spec:
 > **Prerequisites:** Cilium must be deployed with `authentication.mutual.spire.enabled: true` and a SPIRE server running in the cluster. Verify with `cilium config view | grep spire`.
 
 Ref: https://docs.cilium.io/en/latest/network/servicemesh/mutual-authentication/mutual-authentication-example/
+
+---
+
+### 7b. Cilium — Auto-detected egress rules
+
+Before generating the `CiliumNetworkPolicy`, the skill scans the project source code and config files to discover HTTP endpoints the application calls. Detected endpoints are appended to the base policy — the base rules (intra-namespace mTLS + CoreDNS) are never modified.
+
+#### Scanning patterns (by language)
+
+**Node.js / TypeScript** (`.js`, `.ts`, `.mjs`, `.cjs`)
+- `axios.get/post/put/delete/request('http`
+- `axios.create({.*baseURL.*http`
+- `fetch('http` / `fetch("http`
+- `http.get(` / `https.get(`
+- `got(` / `got.get/post(`
+- `superagent.get/post(`
+
+**Python** (`.py`)
+- `requests.get/post/put/delete/request(.*http`
+- `httpx.get/post/put/delete/request(.*http`
+- `aiohttp.*http`
+- `urllib.request.urlopen(`
+
+**Go** (`.go`)
+- `http.Get(` / `http.Post(`
+- `http.NewRequest(`
+- `resty.*SetHostURL` / `.R().Get/Post(`
+- `grpc.Dial(`
+
+**Java** (`.java`)
+- `@FeignClient.*url.*http`
+- `RestTemplate.*getForObject/postForObject/exchange`
+- `WebClient.*baseUrl.*http`
+- `HttpClient.*send(`
+
+**Config files** (all stacks — always scanned)
+- `.env*` → values matching `*_URL=http`, `*_HOST=http`, `*_ENDPOINT=http`, `*_API=http`
+- `application.yml` / `application.properties` → `url: http`, `base-url: http`, `uri: http`
+- `values.yaml` / `values-*.yaml` → `url: http`, `endpoint: http`
+- `appsettings.json` → `"Url": "http`, `"BaseAddress": "http`
+
+#### Classification
+
+| Type | Criteria | Cilium rule |
+|------|----------|-------------|
+| **Internal** | No TLD — matches `service-name`, `service.namespace`, `*.svc.cluster.local` | `toEndpoints` + `authentication.mode: required` |
+| **External** | FQDN with real TLD (`.com`, `.io`, `.org`, `.net`, `.dev`, etc.) | `toFQDNs` |
+
+#### Rule templates
+
+**Internal K8s service:**
+```yaml
+# Auto-detected egress: <service> (<namespace>)
+- toEndpoints:
+  - matchLabels:
+      io.kubernetes.pod.namespace: <target_namespace>
+      app: <service_name>
+  toPorts:
+  - ports:
+    - port: "<port>"
+      protocol: TCP
+  authentication:
+    mode: required
+```
+If the target namespace cannot be determined from the code, assume the same project namespace and add a comment noting the assumption.
+
+**External FQDN:**
+```yaml
+# Auto-detected egress: <fqdn>
+- toFQDNs:
+  - matchName: "<fqdn>"
+  toPorts:
+  - ports:
+    - port: "443"
+      protocol: TCP
+```
+Use port `80` for `http://`, `443` for `https://`. The existing CoreDNS rule already enables FQDN resolution.
+
+> **Note:** Always present detected endpoints to the user for confirmation before generating rules — allow additions and removals. If nothing is detected, generate the base policy only and note it in the output summary.
 
 ---
 
@@ -480,6 +565,32 @@ update-k8s-tag:
   rules:
     - if: '$CI_COMMIT_TAG'
 ```
+
+---
+
+### `apply-argocd` job
+
+Applies the ArgoCD repository secret and Application CR to the cluster whenever files in `argocd/` change. Runs independently of the build/tag flow — triggered only by changes to the ArgoCD manifests.
+
+Required CI variable:
+- `KUBE_CONFIG` — base64-encoded kubeconfig with permissions to create resources in the `argocd` namespace
+
+```yaml
+apply-argocd:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  before_script:
+    - mkdir -p ~/.kube
+    - echo "$KUBE_CONFIG" | base64 -d > ~/.kube/config
+  script:
+    - kubectl apply -f argocd/secret-<project>-repo.yaml
+    - kubectl apply -f argocd/application-<project>.yaml
+  rules:
+    - changes:
+        - argocd/**/*
+```
+
+> `<project>` is replaced with the actual project name at generation time. The secret is applied before the Application CR to ensure ArgoCD can access the repository when it first syncs.
 
 ---
 
@@ -740,9 +851,11 @@ helm/
 - `_helpers.tpl`: define `<project>.fullname`, `<project>.labels`, `<project>.selectorLabels`
 - All variable fields use `{{ .Values.<key> }}` — never hardcode project-specific values
 
-**Values files — one base + one per environment (all live in the app repo):**
+**Values files — one complete file per environment (all live in the app repo root):**
 
-`values.yaml` — base defaults shared by all environments:
+No shared base file. Each environment file is self-contained with the full schema.
+
+`values-dev.yaml` — development (complete):
 ```yaml
 replicaCount: 1
 image:
@@ -765,9 +878,9 @@ apisix:
   subdomain: <subdomain>
 prometheus:
   serviceMonitor:
-    enable: true   # controls ServiceMonitor generation
+    enable: true
   prometheusRules:
-    enable: true   # controls PrometheusRule (alerting rules) generation
+    enable: true
   path: /metrics
   port: http
 otel:
@@ -778,8 +891,8 @@ otel:
     type: parentbased_traceidratio
     argument: "1"
   autoinstrumentation:
-    enable: true   # controls Instrumentation CR generation and Deployment annotation
-stack: <stack>   # nodejs | java | python | go — used for OTel injection annotation
+    enable: true
+stack: <stack>   # nodejs | java | python | go
 autoscaling:
   enabled: false
   type: hpa      # hpa | keda
@@ -791,9 +904,13 @@ autoscaling:
     targetUtilization: 80
 ```
 
-`values-dev.yaml` — development overrides:
+`values-qua.yaml` — staging/QA (complete, same resource profile as dev):
 ```yaml
 replicaCount: 1
+image:
+  repository: <image_registry>
+  tag: latest
+  pullPolicy: IfNotPresent
 resources:
   requests:
     memory: "128Mi"
@@ -801,23 +918,48 @@ resources:
   limits:
     memory: "256Mi"
     cpu: "250m"
+service:
+  type: ClusterIP
+  port: <port>
+vault:
+  address: <vault_address>
+apisix:
+  subdomain: <subdomain>
+prometheus:
+  serviceMonitor:
+    enable: true
+  prometheusRules:
+    enable: true
+  path: /metrics
+  port: http
+otel:
+  enabled: true
+  endpoint: <otel_endpoint>
+  protocol: otlp/http
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1"
+  autoinstrumentation:
+    enable: true
+stack: <stack>
+autoscaling:
+  enabled: false
+  type: hpa
+  minReplicas: 1
+  maxReplicas: 10
+  cpu:
+    targetUtilization: 70
+  memory:
+    targetUtilization: 80
 ```
 
-`values-qua.yaml` — staging/QA overrides:
-```yaml
-replicaCount: 1
-resources:
-  requests:
-    memory: "128Mi"
-    cpu: "100m"
-  limits:
-    memory: "256Mi"
-    cpu: "250m"
-```
-
-`values-prd.yaml` — production overrides:
+`values-prd.yaml` — production (complete, higher resources and replicas):
 ```yaml
 replicaCount: 2
+image:
+  repository: <image_registry>
+  tag: latest
+  pullPolicy: IfNotPresent
 resources:
   requests:
     memory: "256Mi"
@@ -825,13 +967,45 @@ resources:
   limits:
     memory: "512Mi"
     cpu: "500m"
+service:
+  type: ClusterIP
+  port: <port>
+vault:
+  address: <vault_address>
+apisix:
+  subdomain: <subdomain>
+prometheus:
+  serviceMonitor:
+    enable: true
+  prometheusRules:
+    enable: true
+  path: /metrics
+  port: http
+otel:
+  enabled: true
+  endpoint: <otel_endpoint>
+  protocol: otlp/http
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1"
+  autoinstrumentation:
+    enable: true
+stack: <stack>
+autoscaling:
+  enabled: false
+  type: hpa
+  minReplicas: 2
+  maxReplicas: 20
+  cpu:
+    targetUtilization: 70
+  memory:
+    targetUtilization: 80
 ```
 
-ArgoCD Application CR references both files via `valueFiles` in the multi-source config:
+ArgoCD Application CR references only the env-specific file via `valueFiles`:
 ```yaml
 helm:
   valueFiles:
-  - $values/values.yaml
   - $values/values-<env>.yaml   # dev | qua | prd
 ```
 
