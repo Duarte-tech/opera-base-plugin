@@ -38,6 +38,8 @@ No files are applied to the cluster — output is YAML only.
 | `gitlab_access` | GitLab access for ArgoCD Secret — SSH key or HTTPS token |
 | `vault_address` | Vault address, e.g. `https://vault.novlok.co` |
 | `otel_endpoint` | OTel collector endpoint (Node.js default: `otlp/http`) |
+| `db_name` | *(only if database detected)* Database name (default: `<project>_db`) |
+| `postgres_version` | *(only if database detected)* PostgreSQL version (default: `16`) |
 
 ## Files generated — Helm
 
@@ -57,6 +59,7 @@ helm/<project>/
     ├── serviceaccount.yaml
     ├── app/              Deployment (securityContext), Service, ConfigMap
     ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret (if secrets found)
+    ├── database/         CNPG Cluster + Database CR (if database detected; enable per env via values)
     ├── apisix/           ApisixRoute, ApisixUpstream
     ├── alertmanager/     PrometheusRule
     ├── prometheus/       ServiceMonitor (if prometheus.serviceMonitor.enable)
@@ -87,6 +90,7 @@ kubernetes/
 │   ├── serviceaccount.yaml
 │   ├── app/              Deployment (securityContext), Service, ConfigMap
 │   ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret (if secrets found)
+│   ├── database/         CNPG Cluster + Database CR as Kustomize Component (if database detected; overlays opt in)
 │   ├── apisix/           ApisixRoute, ApisixUpstream
 │   ├── alertmanager/     PrometheusRule
 │   ├── prometheus/       ServiceMonitor (if prometheus.serviceMonitor.enable)
@@ -117,8 +121,10 @@ version.yaml                     (created only if absent)
 |-----------|--------|
 | No secrets found in project | vault manifests skipped |
 | `ServiceMonitor` already present | Step 7 skipped |
+| No database indicators detected and user says no | database manifests skipped (Step 3b skipped) |
+| `has_database = true` | CNPG Cluster + Database CR generated; `database.cluster.enable: false` in all values files (Helm) or Component opt-in comment in overlays (Kustomize) |
 
 ## Dependencies
 
 - Skill: `skills/operonix-deploy/SKILL.md`
-- Rules: `references/rules.md` (Rules 1–12)
+- Rules: `references/rules.md` (Rules 1–13)

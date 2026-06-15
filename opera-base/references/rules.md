@@ -43,7 +43,7 @@ ArgoCD `Application` CR: chart from the separate repo; values from the app repo 
 
 ### Excluded — never generate
 
-- Database manifests
+- Database manifests — unless `has_database = true` (see Rule 13)
 - Minio manifests
 - Keycloak manifests
 
@@ -902,6 +902,15 @@ autoscaling:
     targetUtilization: 70
   memory:
     targetUtilization: 80
+database:
+  cluster:
+    enable: false
+    instances: 1
+    postgresVersion: "16"
+    storage:
+      size: 1Gi
+    dbName: <project>_db
+    dbOwner: <project>_user
 ```
 
 `values-qua.yaml` — staging/QA (complete, same resource profile as dev):
@@ -951,6 +960,15 @@ autoscaling:
     targetUtilization: 70
   memory:
     targetUtilization: 80
+database:
+  cluster:
+    enable: false
+    instances: 1
+    postgresVersion: "16"
+    storage:
+      size: 1Gi
+    dbName: <project>_db
+    dbOwner: <project>_user
 ```
 
 `values-prd.yaml` — production (complete, higher resources and replicas):
@@ -1000,6 +1018,15 @@ autoscaling:
     targetUtilization: 70
   memory:
     targetUtilization: 80
+database:
+  cluster:
+    enable: false
+    instances: 3
+    postgresVersion: "16"
+    storage:
+      size: 10Gi
+    dbName: <project>_db
+    dbOwner: <project>_user
 ```
 
 ArgoCD Application CR references only the env-specific file via `valueFiles`:
@@ -1221,6 +1248,127 @@ spec:
 Exceptions:
 - `readOnlyRootFilesystem: false` — only if the process requires writing to the local filesystem at runtime (e.g., temp files, Prisma engine). Document the reason in a comment.
 - `runAsUser` — override per stack if the base image enforces a different UID (e.g., `node:24-alpine` uses UID 1000 by default; align with the Dockerfile `USER` directive).
+
+---
+
+---
+
+## 13. Database — CloudNativePG (CNPG)
+
+Generated only when `has_database = true` (see Step 1 detection in the skill).
+Operator: **CloudNativePG**, API group: `postgresql.cnpg.io/v1`
+
+> **Prerequisite:** CNPG operator must be running in the cluster. Verify: `kubectl get pods -n cnpg-system`
+> The `Database` CR requires CNPG v1.22+. Verify: `kubectl get crd databases.postgresql.cnpg.io`
+
+### Detection patterns (Step 1 — before asking the user)
+
+Scan the project for database indicators and set `has_database = true` if any match:
+
+| File | Patterns |
+|------|----------|
+| `.env*` | `DATABASE_URL=`, `DB_HOST=`, `DB_NAME=`, `POSTGRES_*=`, `PG_*=` |
+| `package.json` | `dependencies` or `devDependencies`: `pg`, `sequelize`, `prisma`, `typeorm`, `knex`, `drizzle-orm` |
+| `go.mod` | `gorm.io/gorm`, `github.com/lib/pq`, `github.com/jackc/pgx` |
+| `pom.xml` / `build.gradle` | `spring-data-jpa`, `spring-boot-starter-data-jpa`, `postgresql` |
+| `requirements.txt` / `pyproject.toml` | `psycopg2`, `asyncpg`, `SQLAlchemy`, `databases` |
+
+Always confirm the detected result with the user. If nothing is detected, ask explicitly: "Does this project connect to a PostgreSQL database?"
+
+If `has_database = true`, ask:
+- `db_name` — database name (default: `<project>_db`)
+- `postgres_version` — PostgreSQL version (default: `16`)
+
+### Cluster CR
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: <project>-db
+  namespace: <project>
+spec:
+  instances: 1                                        # helm: {{ .Values.database.cluster.instances }}
+  imageName: ghcr.io/cloudnative-pg/postgresql:16    # helm: ghcr.io/cloudnative-pg/postgresql:{{ .Values.database.cluster.postgresVersion }}
+  storage:
+    size: 1Gi                                         # helm: {{ .Values.database.cluster.storage.size }}
+  bootstrap:
+    initdb:
+      database: <project>_db                          # helm: {{ .Values.database.cluster.dbName }}
+      owner: <project>_user                           # helm: {{ .Values.database.cluster.dbOwner }}
+      secret:
+        name: <project>-db-credentials
+```
+
+> `bootstrap.initdb.secret` must be a pre-existing Kubernetes `Secret` in the project namespace with keys `username` and `password`. Route it through Vault (VaultStaticSecret) if the project uses Vault for secrets; otherwise document it as a manual prerequisite in the output summary.
+
+### Database CR (CNPG v1.22+)
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: <project>-db-<dbname>                        # e.g. myapp-db-myapp_db
+  namespace: <project>
+spec:
+  name: <project>_db                                 # helm: {{ .Values.database.cluster.dbName }}
+  owner: <project>_user                              # helm: {{ .Values.database.cluster.dbOwner }}
+  cluster:
+    name: <project>-db
+```
+
+### Output paths
+
+| Format | Files |
+|--------|-------|
+| `helm` | `helm/templates/database/cluster.yaml`, `helm/templates/database/database.yaml` |
+| `kustomize` | `kubernetes/base/database/cluster.yaml`, `kubernetes/base/database/database.yaml`, `kubernetes/base/database/kustomization.yaml` |
+
+### Helm — enable/disable
+
+Wrap both CRs in a single conditional:
+
+```yaml
+{{- if .Values.database.cluster.enable }}
+# Cluster CR here
+---
+# Database CR here
+{{- end }}
+```
+
+**values.yaml schema** (all three env files — default `enable: false`; user opts in per environment):
+
+| Key | dev | qua | prd |
+|-----|-----|-----|-----|
+| `database.cluster.enable` | `false` | `false` | `false` |
+| `database.cluster.instances` | `1` | `1` | `3` |
+| `database.cluster.storage.size` | `1Gi` | `1Gi` | `10Gi` |
+| `database.cluster.postgresVersion` | `"16"` | `"16"` | `"16"` |
+| `database.cluster.dbName` | `<project>_db` | `<project>_db` | `<project>_db` |
+| `database.cluster.dbOwner` | `<project>_user` | `<project>_user` | `<project>_user` |
+
+### Kustomize — enable/disable via Component
+
+`kubernetes/base/database/kustomization.yaml` must use `kind: Component` so overlays can opt in selectively:
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+- cluster.yaml
+- database.yaml
+```
+
+The top-level `kubernetes/base/kustomization.yaml` does **not** reference the database component.
+
+Each overlay `kustomization.yaml` gets a commented-out opt-in block:
+
+```yaml
+# components:
+# - ../../base/database   # uncomment to enable CNPG database cluster in this environment
+```
+
+> Kustomize components require kustomize v4.1.0+ or `kubectl` v1.21+.
 
 ---
 

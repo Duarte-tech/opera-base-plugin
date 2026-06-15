@@ -34,6 +34,8 @@ Collect all of these before generating any file. Ask as a grouped checklist in o
 | `vault_mount_mode` | *(ask only if `has_secrets = true` after Step 1)* Vault KV mount: **`new`** (create a dedicated mount for this project) or **`default`** (reuse an existing mount) |
 | `vault_mount_path` | *(ask only if `vault_mount_mode = default`)* Existing mount path, e.g. `kv/novlok` |
 | `otel_endpoint` | OpenTelemetry collector endpoint (protocol varies per project; Node.js default: `otlp/http`) |
+| `db_name` | *(ask only if `has_database = true` after Step 1)* Database name (default: `<project>_db`) |
+| `postgres_version` | *(ask only if `has_database = true` after Step 1)* PostgreSQL version (default: `16`) |
 
 ---
 
@@ -85,6 +87,18 @@ After classifying, **present both lists to the user for confirmation** and allow
 - `confidential_secrets` non-empty → `has_secrets = true`; ask `vault_mount_mode` (and `vault_mount_path` if `default`)
 - `confidential_secrets` empty → `has_secrets = false`; note in summary
 
+**Database detection** — scan the project for PostgreSQL indicators (see `references/rules.md` Rule 13 for exact patterns per stack):
+- `.env*` files: keys matching `DATABASE_URL`, `DB_HOST`, `DB_NAME`, `POSTGRES_*`, `PG_*`
+- `package.json` dependencies: `pg`, `sequelize`, `prisma`, `typeorm`, `knex`, `drizzle-orm`
+- `go.mod`: `gorm.io/gorm`, `github.com/lib/pq`, `github.com/jackc/pgx`
+- `pom.xml` / `build.gradle`: `spring-data-jpa`, `spring-boot-starter-data-jpa`, `postgresql`
+- `requirements.txt` / `pyproject.toml`: `psycopg2`, `asyncpg`, `SQLAlchemy`, `databases`
+
+Present findings to the user for confirmation. If nothing is detected, ask explicitly: "Does this project connect to a PostgreSQL database?"
+
+- `has_database = true` → ask `db_name` (default: `<project>_db`) and `postgres_version` (default: `16`)
+- `has_database = false` → skip Step 3b
+
 ### Step 2 — Check for existing ServiceMonitor
 
 - `helm`: look in `helm/templates/prometheus/` for any `ServiceMonitor` template
@@ -118,6 +132,46 @@ For each service in `services`:
 - Only if `has_secrets = false`; otherwise omit — Vault handles it
 
 **Kustomize only:** generate `kubernetes/base/app/kustomization.yaml` listing all files in this directory.
+
+---
+
+### Step 3b — CNPG database manifests
+
+Skip if `has_database = false`.
+
+Generate a **Cluster CR** and a **Database CR** using the schemas from `references/rules.md` Rule 13.
+
+**Cluster CR** (`postgresql.cnpg.io/v1`, kind `Cluster`):
+- `metadata.name`: `<project>-db`
+- `spec.instances`: helm `{{ .Values.database.cluster.instances }}`; kustomize hardcode per env (dev/qua: `1`, prd: `3`)
+- `spec.imageName`: helm `ghcr.io/cloudnative-pg/postgresql:{{ .Values.database.cluster.postgresVersion }}`; kustomize hardcode `ghcr.io/cloudnative-pg/postgresql:<postgres_version>`
+- `spec.storage.size`: helm `{{ .Values.database.cluster.storage.size }}`; kustomize hardcode (dev/qua: `1Gi`, prd: `10Gi`)
+- `spec.bootstrap.initdb.database`: helm `{{ .Values.database.cluster.dbName }}`; kustomize hardcode `<db_name>`
+- `spec.bootstrap.initdb.owner`: helm `{{ .Values.database.cluster.dbOwner }}`; kustomize hardcode `<project>_user`
+- `spec.bootstrap.initdb.secret.name`: `<project>-db-credentials` (pre-existing Secret — document as manual prerequisite in output summary)
+
+**Database CR** (`postgresql.cnpg.io/v1`, kind `Database` — requires CNPG v1.22+):
+- `metadata.name`: `<project>-db-<db_name>`
+- `spec.name`: helm `{{ .Values.database.cluster.dbName }}`; kustomize hardcode `<db_name>`
+- `spec.owner`: helm `{{ .Values.database.cluster.dbOwner }}`; kustomize hardcode `<project>_user`
+- `spec.cluster.name`: `<project>-db`
+
+**Helm:** wrap both CRs in `{{- if .Values.database.cluster.enable }}` … `{{- end }}`.
+
+**Kustomize:**
+- Generate `kubernetes/base/database/kustomization.yaml` with `kind: Component` (not `kind: Kustomization`) — this prevents it from being auto-included by the base.
+- Do **not** add `database/` to `kubernetes/base/kustomization.yaml`.
+- Add a commented opt-in block to every overlay `kustomization.yaml`:
+  ```yaml
+  # components:
+  # - ../../base/database   # uncomment to enable CNPG database cluster in this environment
+  ```
+
+Use CR templates from `references/rules.md` Rule 13.
+
+Output path:
+- `helm`: `helm/templates/database/`
+- `kustomize`: `kubernetes/base/database/` + `kustomization.yaml` (kind: Component)
 
 ---
 
@@ -448,6 +502,7 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `helm/templates/_helpers.tpl` | Created | — |
 | `helm/templates/app/` | Created | N deployments (securityContext), N services, N configmaps |
 | `helm/templates/vault/` | Created / Skipped | Secrets found: yes/no |
+| `helm/templates/database/` | Created / Skipped | CNPG Cluster + Database CR (if has_database); `database.cluster.enable: false` in all values files |
 | `helm/templates/apisix/` | Created | Route + N upstreams |
 | `helm/templates/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
 | `helm/templates/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
@@ -468,6 +523,7 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `kubernetes/base/` | Created | All manifests + kustomization.yaml per dir |
 | `kubernetes/base/app/` | Created | N deployments (securityContext), N services, N configmaps |
 | `kubernetes/base/vault/` | Created / Skipped | Secrets found: yes/no |
+| `kubernetes/base/database/` | Created / Skipped | CNPG Cluster + Database CR as Kustomize Component (if has_database); overlays opt in by uncommenting `components` block |
 | `kubernetes/base/apisix/` | Created | Route + N upstreams |
 | `kubernetes/base/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
 | `kubernetes/base/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
