@@ -58,7 +58,7 @@ helm/<project>/
     ├── namespace.yaml
     ├── serviceaccount.yaml
     ├── app/              Deployment (securityContext), Service, ConfigMap
-    ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret (if secrets found)
+    ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret + novlok-operator VaultAuth, VaultPolicy, VaultKubernetesRole (if secrets found)
     ├── database/         CNPG Cluster + Database CR (if database detected; enable per env via values)
     ├── apisix/           ApisixRoute, ApisixUpstream
     ├── alertmanager/     PrometheusRule
@@ -66,9 +66,7 @@ helm/<project>/
     ├── otel/             Instrumentation CR (if otel.autoinstrumentation.enable)
     ├── autoscaling/      HPA or KEDA ScaledObject (if autoscaling.enabled)
     ├── cilium/           CiliumNetworkPolicy (mTLS ingress+egress)
-    └── crossplane/
-        ├── cloudflare/   Cloudflare DNS Records CR
-        └── vault/        Vault mount, user, policy CRs (Crossplane)
+    └── cloudflare/       Cloudflare DNS Record CR (novlok-operator)
 argocd/
 ├── application-<project>.yaml   (multi-source: chart repo + values.yaml + values-<env>.yaml)
 └── secret-<project>-repo.yaml
@@ -89,7 +87,7 @@ kubernetes/
 │   ├── namespace.yaml
 │   ├── serviceaccount.yaml
 │   ├── app/              Deployment (securityContext), Service, ConfigMap
-│   ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret (if secrets found)
+│   ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret + novlok-operator VaultAuth, VaultPolicy, VaultKubernetesRole (if secrets found)
 │   ├── database/         CNPG Cluster + Database CR as Kustomize Component (if database detected; overlays opt in)
 │   ├── apisix/           ApisixRoute, ApisixUpstream
 │   ├── alertmanager/     PrometheusRule
@@ -97,9 +95,7 @@ kubernetes/
 │   ├── otel/             Instrumentation CR (if otel.autoinstrumentation.enable)
 │   ├── autoscaling/      HPA or KEDA ScaledObject (if autoscaling.enabled)
 │   ├── cilium/           CiliumNetworkPolicy (mTLS ingress+egress)
-│   └── crossplane/
-│       ├── cloudflare/   Cloudflare DNS Records CR
-│       └── vault/        Vault CRs (Crossplane)
+│   └── cloudflare/       Cloudflare DNS Record CR (novlok-operator)
 └── overlays/
     ├── dev/              kustomization.yaml + patches/replicas.yaml
     ├── qua/

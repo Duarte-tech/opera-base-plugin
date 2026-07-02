@@ -17,11 +17,12 @@ kubernetes/
 ├── alertmanager/     → Alert rules
 ├── prometheus/       → ServiceMonitor
 ├── cilium/           → CiliumNetworkPolicy
-├── crossplane/
-│   ├── cloudflare/   → dns.cloudflare.crossplane.io/v1alpha1 Records CR
-│   └── vault/        → Vault Crossplane CRs (mount, user, policy)
+├── cloudflare/       → cloudflare.infra.novlok.com/v1 Record (novlok-operator)
 └── vault/            → VaultAuth, VaultStaticSecret (vault-secrets-operator)
+                        + VaultAuth, VaultPolicy, VaultKubernetesRole (novlok-operator)
 ```
+
+> This structure is the *current* target — on every run, reconcile it against what's already in the project (see `SKILL.md` → Reconciliation rule) rather than assuming an existing file or folder is already correct.
 
 ### Helm chart layout
 
@@ -107,12 +108,58 @@ spec:
 
 **Mount path resolution (determined at runtime via `vault_mount_mode`):**
 
-| `vault_mount_mode` | `spec.mount` | `spec.path` | Crossplane mount CR |
-|--------------------|-------------|-------------|---------------------|
-| `new` | `kv` | `novlok/<project>` | Generated |
-| `default` | KV engine from `vault_mount_path` | `<vault_mount_path>/<project>` | Skipped (mount exists) |
+| `vault_mount_mode` | `spec.mount` | `spec.path` |
+|--------------------|-------------|-------------|
+| `new` | `kv` | `novlok/<project>` |
+| `default` | KV engine from `vault_mount_path` | `<vault_mount_path>/<project>` |
 
-Crossplane Vault user and policy CRs are always generated regardless of mount mode.
+> **Known gap:** novlok-operator has no generic CR to create a new KV secrets-engine mount (only `DatabaseMount` and `KubernetesMount` exist). In both `vault_mount_mode` values above, the KV mount is assumed to **already exist** — provision it out-of-band (e.g. `vault secrets enable -path=kv kv-v2`) until the operator adds a generic mount CR. `vault_mount_mode` only changes which path is used, not whether anything is generated to create the mount.
+
+**Vault access resources (novlok-operator) — always generated** when `has_secrets = true`, regardless of mount mode. These replace the old Crossplane "Vault user and policy" CRs by giving the project's Kubernetes ServiceAccount a scoped Vault Kubernetes-auth role:
+
+```yaml
+apiVersion: vault.infra.novlok.com/v1
+kind: VaultAuth
+metadata:
+  name: <project>-novlok-auth   # distinct name — do not collide with vault-secrets-operator's <project>-vault-auth below
+  namespace: <project>
+spec:
+  address: <vault_address>       # ask at runtime
+  kubernetes:
+    role: novlok                 # org-wide bootstrap role the operator itself authenticates with
+    mountPath: kubernetes
+    serviceAccountName: vault-auth
+---
+apiVersion: vault.infra.novlok.com/v1
+kind: VaultPolicy
+metadata:
+  name: <project>-policy
+  namespace: <project>
+spec:
+  vaultAuthRef: <project>-novlok-auth
+  rules: |
+    path "<kv-mount>/data/<kv-path>/*" {   # <kv-mount>/<kv-path> from the mount-path resolution table above
+      capabilities = ["read"]
+    }
+---
+apiVersion: vault.infra.novlok.com/v1
+kind: VaultKubernetesRole
+metadata:
+  name: <project>
+  namespace: <project>
+spec:
+  backend: kubernetes             # writes directly to the already-mounted kubernetes auth engine
+  vaultAuthRef: <project>-novlok-auth
+  serviceAccountName: <project>-sa
+  allowedKubernetesNamespaces:
+    - <project>
+  policies:
+    - <project>-policy
+  tokenDefaultTTL: "30m"
+  tokenMaxTTL: "1h"
+```
+
+The `VaultKubernetesRole` name (`<project>`) is exactly the Vault role the vault-secrets-operator `VaultAuth` template above references via `spec.kubernetes.role: <project>`.
 
 **Secret classification** — only `confidential_secrets` from Step 1 are stored in Vault:
 - Confidential: API keys, tokens, passwords, private keys, encryption keys, certificates, webhook secrets, high-entropy strings
@@ -269,24 +316,27 @@ spec:
 
 ---
 
-## 6. Cloudflare DNS (Crossplane)
+## 6. Cloudflare DNS (novlok-operator)
 
 ```yaml
-apiVersion: dns.cloudflare.crossplane.io/v1alpha1
-kind: Records
+apiVersion: cloudflare.infra.novlok.com/v1
+kind: Record
 metadata:
-  name: <project>
+  name: <project>              # Record is cluster-scoped — no namespace field
 spec:
-  forProvider:
-    zoneName: novlok.co
-    proxied: true
-    type: A
-    # ipAddress: <ip>  # optional — use if no LoadBalancer reference
-    loadbalancerRef:   # optional — references the APISIX gateway LoadBalancer
-      name: apisix-gateway
-      namespace: apisix
-  providerConfigRef:
-    name: cloudflare-config
+  zone: novlok.co
+  name: <subdomain>
+  type: A
+  # content: <ip>              # optional — mutually exclusive with serviceRef
+  serviceRef:                  # optional — references the APISIX gateway Service
+    name: apisix-gateway
+    namespace: apisix
+  ttl: 1
+  proxied: true
+  credentialsSecretRef:        # Cloudflare API token — no ProviderConfig needed
+    name: cloudflare-api-token-secret
+    namespace: cert-manager
+    key: api-token
 ```
 
 ---
@@ -827,7 +877,10 @@ helm/
     ├── vault/
     │   ├── connection.yaml
     │   ├── auth.yaml
-    │   └── staticsecret.yaml
+    │   ├── staticsecret.yaml
+    │   ├── novlok-auth.yaml
+    │   ├── policy.yaml
+    │   └── role.yaml
     ├── cilium/
     │   └── networkpolicy.yaml
     ├── prometheus/
@@ -838,11 +891,8 @@ helm/
     │   └── prometheusrule.yaml
     ├── autoscaling/
     │   └── autoscaling.yaml
-    └── crossplane/
-        ├── cloudflare/
-        │   └── records.yaml
-        └── vault/
-            └── policy.yaml
+    └── cloudflare/
+        └── record.yaml
 ```
 
 **Helm conventions:**
@@ -1063,6 +1113,9 @@ kubernetes/
 │   │   ├── connection.yaml
 │   │   ├── auth.yaml
 │   │   ├── staticsecret.yaml
+│   │   ├── novlok-auth.yaml
+│   │   ├── policy.yaml
+│   │   ├── role.yaml
 │   │   └── kustomization.yaml
 │   ├── cilium/
 │   │   ├── networkpolicy.yaml
@@ -1079,13 +1132,9 @@ kubernetes/
 │   ├── autoscaling/
 │   │   ├── autoscaling.yaml
 │   │   └── kustomization.yaml
-│   └── crossplane/
-│       ├── cloudflare/
-│       │   ├── records.yaml
-│       │   └── kustomization.yaml
-│       └── vault/
-│           ├── policy.yaml
-│           └── kustomization.yaml
+│   └── cloudflare/
+│       ├── record.yaml
+│       └── kustomization.yaml
 └── overlays/
     ├── dev/
     │   ├── kustomization.yaml
@@ -1369,6 +1418,133 @@ Each overlay `kustomization.yaml` gets a commented-out opt-in block:
 ```
 
 > Kustomize components require kustomize v4.1.0+ or `kubectl` v1.21+.
+
+---
+
+## 14. Application Persistent Storage (PVC)
+
+Generated only when `has_persistence = true` (see Step 1 detection in the skill).
+
+### Detection patterns (Step 1 — before asking the user)
+
+Scan for indicators that the application writes files that must survive pod restarts:
+
+| File | Patterns |
+|------|----------|
+| `package.json` | `dependencies` or `devDependencies`: `multer`, `formidable`, `busboy`, `better-sqlite3`, `sqlite3` |
+| `requirements.txt` / `pyproject.toml` | `python-multipart`, `aiofiles`, `sqlite`, `pysqlite` |
+| `pom.xml` / `build.gradle` | `commons-fileupload`, `multipart` |
+| `go.mod` | `mime/multipart` |
+| `.env*` | Values matching `UPLOAD_PATH=`, `STORAGE_PATH=`, `DATA_DIR=`, `FILE_PATH=`, `UPLOAD_DIR=` |
+
+Always confirm the detected result with the user. If nothing is detected, ask explicitly: "Does this application write files to disk that must persist across pod restarts?"
+
+If `has_persistence = true`, ask:
+- `persistence_mount_path` — mount path inside the container (default: `/data`)
+- `persistence_size` — PVC storage size (default: `1Gi`)
+
+### PVC template
+
+**Helm** (`helm/templates/app/pvc.yaml`):
+
+```yaml
+{{- if .Values.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "<project>.fullname" . }}-pvc
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+  storageClassName: {{ .Values.persistence.storageClassName }}
+{{- end }}
+```
+
+**Kustomize** (`kubernetes/base/app/pvc.yaml`):
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: <project>-<service>-pvc
+  namespace: <project>
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi           # override per env via kustomize patch if needed
+  storageClassName: standard
+```
+
+### Deployment additions
+
+Add to every Deployment when `has_persistence = true`. Insert `volumeMounts` after the container `securityContext` block and `volumes` after the `containers` list.
+
+**Helm:**
+
+```yaml
+spec:
+  template:
+    spec:
+      containers:
+      - name: <service>
+        # ... existing fields ...
+        volumeMounts:
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          mountPath: {{ .Values.persistence.mountPath }}
+        {{- end }}
+      {{- if .Values.persistence.enabled }}
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "<project>.fullname" . }}-pvc
+      {{- end }}
+```
+
+**Kustomize:**
+
+```yaml
+spec:
+  template:
+    spec:
+      containers:
+      - name: <service>
+        # ... existing fields ...
+        volumeMounts:
+        - name: data
+          mountPath: /data    # persistence_mount_path from runtime input
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: <project>-<service>-pvc
+```
+
+### values.yaml persistence schema
+
+Add to all three env files (default `enabled: false`; user opts in per environment):
+
+```yaml
+persistence:
+  enabled: false
+  size: 1Gi                  # persistence_size from runtime input
+  storageClassName: standard
+  mountPath: /data           # persistence_mount_path from runtime input
+```
+
+> **Note:** `readOnlyRootFilesystem: true` is compatible with PVC mounts — the mounted volume is writable regardless of the root filesystem restriction. `fsGroup: 1001` in the pod security context (Rule 10) ensures the PVC is owned by the app's GID at mount time.
+
+### Output paths
+
+| Format | Files |
+|--------|-------|
+| `helm` | `helm/templates/app/pvc.yaml` |
+| `kustomize` | `kubernetes/base/app/pvc.yaml` (add to `kubernetes/base/app/kustomization.yaml`) |
 
 ---
 

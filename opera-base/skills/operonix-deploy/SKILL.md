@@ -36,6 +36,8 @@ Collect all of these before generating any file. Ask as a grouped checklist in o
 | `otel_endpoint` | OpenTelemetry collector endpoint (protocol varies per project; Node.js default: `otlp/http`) |
 | `db_name` | *(ask only if `has_database = true` after Step 1)* Database name (default: `<project>_db`) |
 | `postgres_version` | *(ask only if `has_database = true` after Step 1)* PostgreSQL version (default: `16`) |
+| `persistence_mount_path` | *(ask only if `has_persistence = true` after Step 1)* Mount path inside the container (default: `/data`) |
+| `persistence_size` | *(ask only if `has_persistence = true` after Step 1)* PVC storage size (default: `1Gi`) |
 
 ---
 
@@ -68,6 +70,11 @@ Execute steps in order. Steps 1 and 2 are read-only scans that inform later step
 > | ArgoCD source | chart repo + values from app repo | `kubernetes/overlays/<env>` in app repo |
 > | CI image tag patch | `yq` on `values.yaml` | `kustomize edit set image` on overlay |
 
+> **Reconciliation rule:** "already exists" is not the same as "already correct". Before treating any file or directory as already satisfied, compare what's actually on disk against what these rules and this skill would generate *today*.
+> - If it differs — wrong API group/kind, outdated field names, an obsolete directory layout (e.g. a leftover `crossplane/` folder from before the novlok-operator migration) — **update it in place** to match the current templates, and report it as `Updated` in the output summary (see Output summary below).
+> - If a directory the current rules no longer produce still exists, remove it (after moving any still-relevant content to its new location) instead of leaving it alongside the new structure.
+> - This applies on every run, not just first-time scaffolding — projects are expected to be re-scaffolded as these rules evolve.
+
 ### Step 1 — Scan and classify secrets
 
 Scan: `.env`, `application.yml`, `application.properties`, `application-*.yml`, source files.
@@ -98,6 +105,13 @@ Present findings to the user for confirmation. If nothing is detected, ask expli
 
 - `has_database = true` → ask `db_name` (default: `<project>_db`) and `postgres_version` (default: `16`)
 - `has_database = false` → skip Step 3b
+
+**Persistence detection** — scan the project for file upload libraries and local file storage indicators (see `references/rules.md` Rule 14 for exact patterns per stack and config files).
+
+Present findings to the user for confirmation. If nothing is detected, ask explicitly: "Does this application write files to disk that must persist across pod restarts?"
+
+- `has_persistence = true` → ask `persistence_mount_path` (default: `/data`) and `persistence_size` (default: `1Gi`)
+- `has_persistence = false` → skip Step 3c
 
 ### Step 2 — Check for existing ServiceMonitor
 
@@ -175,13 +189,27 @@ Output path:
 
 ---
 
+### Step 3c — PVC manifest
+
+Skip if `has_persistence = false`.
+
+Generate `pvc.yaml` using the template from `references/rules.md` Rule 14.
+
+Also update every Deployment from Step 3 to add `volumeMounts` (container level) and `volumes` (pod spec level) referencing this PVC — see Rule 14 for exact YAML structure per output format.
+
+Output path:
+- `helm`: `helm/templates/app/pvc.yaml`
+- `kustomize`: `kubernetes/base/app/pvc.yaml` — add to `kubernetes/base/app/kustomization.yaml`
+
+---
+
 ### Step 4 — Vault manifests
 
 Skip if `has_secrets = false`.
 
-**Resolve mount path** from `vault_mount_mode`:
-- `vault_mount_mode = new` → mount path: `kv/novlok/<project>/`; **generate Crossplane Vault mount CR** for this project
-- `vault_mount_mode = default` → mount path: `<vault_mount_path>/<project>/`; **skip Crossplane Vault mount CR** (mount already exists)
+**Resolve mount path** from `vault_mount_mode` (the KV mount itself is assumed to already exist in both cases — novlok-operator has no generic CR to create one; see Rule 2 gap note):
+- `vault_mount_mode = new` → mount path: `kv/novlok/<project>/`
+- `vault_mount_mode = default` → mount path: `<vault_mount_path>/<project>/`
 
 Generate `VaultConnection`, `VaultAuth`, `VaultStaticSecret` CRs covering only `confidential_secrets` from Step 1:
 - `vault_address` from runtime input (helm: `{{ .Values.vault.address }}`)
@@ -189,14 +217,14 @@ Generate `VaultConnection`, `VaultAuth`, `VaultStaticSecret` CRs covering only `
 - `VaultStaticSecret.spec.mount`: KV engine name from the resolved mount path (e.g. `kv`)
 - `VaultStaticSecret.spec.path`: path within the mount (e.g. `novlok/<project>` or `<vault_mount_path>/<project>`)
 
-Also generate Crossplane Vault user and policy CRs (always, regardless of mount mode).
+Also generate the novlok-operator `VaultAuth`, `VaultPolicy`, and `VaultKubernetesRole` CRs (always, regardless of mount mode) — these grant `<project>-sa` scoped read access to the resolved KV path and back the `role: <project>` referenced above.
 
 Output path:
 - `helm`: `helm/templates/vault/`
 - `kustomize`: `kubernetes/base/vault/` + `kustomization.yaml`
 
 Use the CR templates from `references/rules.md` Rule 2.
-Verify API versions against cluster: `kubectl get crd | grep hashicorp`
+Verify API versions against cluster: `kubectl get crd | grep hashicorp` (vault-secrets-operator) and `kubectl get crd | grep infra.novlok.com` (novlok-operator)
 
 ---
 
@@ -220,16 +248,16 @@ Use the CR templates from `references/rules.md` Rule 5.
 
 ### Step 6 — Cloudflare DNS manifest
 
-One `dns.cloudflare.crossplane.io/v1alpha1 Records` CR (plural — this is the correct kind):
+One `cloudflare.infra.novlok.com/v1 Record` CR (novlok-operator; cluster-scoped):
 
-- `zoneName: novlok.co`
+- `zone: novlok.co`
 - `proxied: true`, `type: A`
-- `loadbalancerRef: name: apisix-gateway, namespace: apisix`
-- `providerConfigRef: name: cloudflare-config`
+- `serviceRef: name: apisix-gateway, namespace: apisix`
+- `credentialsSecretRef: name: cloudflare-api-token-secret, namespace: cert-manager, key: api-token`
 
 Output path:
-- `helm`: `helm/templates/crossplane/cloudflare/`
-- `kustomize`: `kubernetes/base/crossplane/cloudflare/` + `kustomization.yaml`
+- `helm`: `helm/templates/cloudflare/`
+- `kustomize`: `kubernetes/base/cloudflare/` + `kustomization.yaml`
 
 Use the CR template from `references/rules.md` Rule 6.
 
@@ -379,6 +407,7 @@ Generate the format-specific scaffold files that wrap all manifests produced in 
    - `values-qua.yaml` — full schema, qua profile (replicas: 1, lower resources)
    - `values-prd.yaml` — full schema, prd profile (replicas: 2, higher resources, minReplicas: 2)
    Use the complete schemas from `references/rules.md` Rule 11.
+   If `has_persistence = true`, add the `persistence` block from Rule 14 to all three files, using `persistence_mount_path` and `persistence_size` from runtime inputs (default `enabled: false` in all environments).
 6. Generate `helm/<project>/templates/namespace.yaml` and `helm/<project>/templates/serviceaccount.yaml` (ServiceAccount `<project>-sa`).
 
 **If `output_format = kustomize`:**
@@ -490,6 +519,8 @@ version: "0.1.0"
 
 After all steps, report a table. Adapt paths to `output_format`.
 
+Actions: `Created` (new), `Skipped` (correctly absent — e.g. an optional area disabled by runtime inputs), `Already existed` (present and already matches current rules), `Updated` (present but didn't match current rules — content or path was corrected per the Reconciliation rule above; briefly note what changed).
+
 **If `output_format = helm`:**
 
 | File / Directory | Action | Notes |
@@ -500,11 +531,12 @@ After all steps, report a table. Adapt paths to `output_format`.
 | `values-qua.yaml` | Created | QA overrides (app repo root) |
 | `values-prd.yaml` | Created | Prod overrides, replicas: 2 (app repo root) |
 | `helm/templates/_helpers.tpl` | Created | — |
-| `helm/templates/app/` | Created | N deployments (securityContext), N services, N configmaps |
-| `helm/templates/vault/` | Created / Skipped | Secrets found: yes/no |
+| `helm/templates/app/` | Created | N deployments (securityContext, volumeMounts/volumes if persistence), N services, N configmaps |
+| `helm/templates/app/pvc.yaml` | Created / Skipped | PVC (if has_persistence); gated by `persistence.enabled` in values |
+| `helm/templates/vault/` | Created / Skipped | Secrets found: yes/no; includes novlok-operator VaultAuth/VaultPolicy/VaultKubernetesRole |
 | `helm/templates/database/` | Created / Skipped | CNPG Cluster + Database CR (if has_database); `database.cluster.enable: false` in all values files |
 | `helm/templates/apisix/` | Created | Route + N upstreams |
-| `helm/templates/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
+| `helm/templates/cloudflare/` | Created | kind: Record, serviceRef: apisix-gateway |
 | `helm/templates/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
 | `helm/templates/otel/` | Created / Skipped | Instrumentation CR (if otel.autoinstrumentation.enable) |
 | `helm/templates/alertmanager/` | Created | — |
@@ -521,11 +553,12 @@ After all steps, report a table. Adapt paths to `output_format`.
 | File / Directory | Action | Notes |
 |-----------------|--------|-------|
 | `kubernetes/base/` | Created | All manifests + kustomization.yaml per dir |
-| `kubernetes/base/app/` | Created | N deployments (securityContext), N services, N configmaps |
-| `kubernetes/base/vault/` | Created / Skipped | Secrets found: yes/no |
+| `kubernetes/base/app/` | Created | N deployments (securityContext, volumeMounts/volumes if persistence), N services, N configmaps |
+| `kubernetes/base/app/pvc.yaml` | Created / Skipped | PVC (if has_persistence); listed in app/kustomization.yaml |
+| `kubernetes/base/vault/` | Created / Skipped | Secrets found: yes/no; includes novlok-operator VaultAuth/VaultPolicy/VaultKubernetesRole |
 | `kubernetes/base/database/` | Created / Skipped | CNPG Cluster + Database CR as Kustomize Component (if has_database); overlays opt in by uncommenting `components` block |
 | `kubernetes/base/apisix/` | Created | Route + N upstreams |
-| `kubernetes/base/crossplane/cloudflare/` | Created | kind: Records, loadbalancerRef: apisix-gateway |
+| `kubernetes/base/cloudflare/` | Created | kind: Record, serviceRef: apisix-gateway |
 | `kubernetes/base/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
 | `kubernetes/base/otel/` | Created / Skipped | Instrumentation CR (stack-specific, if otel.autoinstrumentation.enable) |
 | `kubernetes/base/alertmanager/` | Created | — |
