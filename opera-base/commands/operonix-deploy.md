@@ -40,6 +40,12 @@ No files are applied to the cluster — output is YAML only.
 | `otel_endpoint` | OTel collector endpoint (Node.js default: `otlp/http`) |
 | `db_name` | *(only if database detected)* Database name (default: `<project>_db`) |
 | `postgres_version` | *(only if database detected)* PostgreSQL version (default: `16`) |
+| `persistence_mount_path`, `persistence_size` | *(only if persistence detected)* PVC mount path and size |
+| `tls_enabled`, `tls_cert_manager_enable`, `tls_cluster_issuer`, `tls_existing_secret_name` | HTTPS termination via APISIX + cert-manager (default: disabled) |
+| `database_pooler_enable`, `database_backup_enable` (+ S3 fields), `database_monitoring_enable` | *(only if database detected)* CNPG Pooler / ScheduledBackup+ObjectStore / PodMonitor |
+| `vault_dynamic_db_secrets_enable` | *(only if database detected)* Vault dynamic DB credentials instead of static |
+| `cron_jobs` | *(only if scheduled tasks detected)* List of `{job_name, schedule, invocation}` |
+| `grafana_dashboard_enable` | Starter Grafana dashboard-as-code ConfigMap (default: disabled) |
 
 ## Files generated — Helm
 
@@ -57,15 +63,17 @@ helm/<project>/
     ├── _helpers.tpl      (from helm create, extended if needed)
     ├── namespace.yaml
     ├── serviceaccount.yaml
-    ├── app/              Deployment (securityContext), Service, ConfigMap
-    ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret + novlok-operator VaultAuth, VaultPolicy, VaultKubernetesRole (if secrets found)
-    ├── database/         CNPG Cluster + Database CR (if database detected; enable per env via values)
+    ├── app/              Deployment (securityContext, RollingUpdate strategy), Service, ConfigMap, PVC (if persistence detected)
+    ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret + novlok-operator VaultAuth, VaultPolicy, VaultKubernetesRole (if secrets found); VaultDynamicSecret (if vault_dynamic_db_secrets_enable)
+    ├── database/         CNPG Cluster + Database CR (if database detected; enable per env via values); Pooler, ScheduledBackup+ObjectStore, PodMonitor (per their own flags)
     ├── apisix/           ApisixRoute, ApisixUpstream
+    ├── tls/              cert-manager Certificate + ApisixTls (if tls.enabled)
     ├── alertmanager/     PrometheusRule
-    ├── prometheus/       ServiceMonitor (if prometheus.serviceMonitor.enable)
+    ├── prometheus/       ServiceMonitor (if prometheus.serviceMonitor.enable); Grafana dashboard ConfigMap (if prometheus.grafanaDashboard.enable)
     ├── otel/             Instrumentation CR (if otel.autoinstrumentation.enable)
     ├── autoscaling/      HPA or KEDA ScaledObject (if autoscaling.enabled)
     ├── cilium/           CiliumNetworkPolicy (mTLS ingress+egress)
+    ├── cron/             CronJob (if scheduled tasks detected)
     └── cloudflare/       Cloudflare DNS Record CR (novlok-operator)
 argocd/
 ├── application-<project>.yaml   (multi-source: chart repo + values.yaml + values-<env>.yaml)
@@ -86,15 +94,17 @@ kubernetes/
 │   ├── kustomization.yaml
 │   ├── namespace.yaml
 │   ├── serviceaccount.yaml
-│   ├── app/              Deployment (securityContext), Service, ConfigMap
-│   ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret + novlok-operator VaultAuth, VaultPolicy, VaultKubernetesRole (if secrets found)
-│   ├── database/         CNPG Cluster + Database CR as Kustomize Component (if database detected; overlays opt in)
+│   ├── app/              Deployment (securityContext, RollingUpdate strategy), Service, ConfigMap, PVC (if persistence detected)
+│   ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret + novlok-operator VaultAuth, VaultPolicy, VaultKubernetesRole (if secrets found); VaultDynamicSecret (if vault_dynamic_db_secrets_enable)
+│   ├── database/         CNPG Cluster + Database CR as Kustomize Component (if database detected; overlays opt in); Pooler, ScheduledBackup+ObjectStore, PodMonitor (per their own flags, same Component)
 │   ├── apisix/           ApisixRoute, ApisixUpstream
+│   ├── tls/              cert-manager Certificate + ApisixTls as Kustomize Component (if tls.enabled; overlays opt in)
 │   ├── alertmanager/     PrometheusRule
-│   ├── prometheus/       ServiceMonitor (if prometheus.serviceMonitor.enable)
+│   ├── prometheus/       ServiceMonitor (if prometheus.serviceMonitor.enable); Grafana dashboard ConfigMap (if prometheus.grafanaDashboard.enable)
 │   ├── otel/             Instrumentation CR (if otel.autoinstrumentation.enable)
 │   ├── autoscaling/      HPA or KEDA ScaledObject (if autoscaling.enabled)
 │   ├── cilium/           CiliumNetworkPolicy (mTLS ingress+egress)
+│   ├── cron/             CronJob, one file per job (if scheduled tasks detected)
 │   └── cloudflare/       Cloudflare DNS Record CR (novlok-operator)
 └── overlays/
     ├── dev/              kustomization.yaml + patches/replicas.yaml
@@ -119,8 +129,12 @@ version.yaml                     (created only if absent)
 | `ServiceMonitor` already present | Step 7 skipped |
 | No database indicators detected and user says no | database manifests skipped (Step 3b skipped) |
 | `has_database = true` | CNPG Cluster + Database CR generated; `database.cluster.enable: false` in all values files (Helm) or Component opt-in comment in overlays (Kustomize) |
+| No persistence indicators detected and user says no | PVC skipped (Step 3c skipped) |
+| No scheduled-task indicators detected and user says no | CronJob manifests skipped (Step 3d skipped) |
+| `tls_enabled = false` (default) | TLS manifests skipped (Step 5b skipped) — current HTTP-only behavior preserved |
+| `vault_dynamic_db_secrets_enable = false` (default) | VaultDynamicSecret skipped (Step 4b skipped); VaultStaticSecret (Rule 2) still used for other confidential secrets |
 
 ## Dependencies
 
 - Skill: `skills/operonix-deploy/SKILL.md`
-- Rules: `references/rules.md` (Rules 1–13)
+- Rules: `references/rules.md` (Rules 1–18)

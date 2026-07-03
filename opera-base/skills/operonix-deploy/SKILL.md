@@ -38,6 +38,17 @@ Collect all of these before generating any file. Ask as a grouped checklist in o
 | `postgres_version` | *(ask only if `has_database = true` after Step 1)* PostgreSQL version (default: `16`) |
 | `persistence_mount_path` | *(ask only if `has_persistence = true` after Step 1)* Mount path inside the container (default: `/data`) |
 | `persistence_size` | *(ask only if `has_persistence = true` after Step 1)* PVC storage size (default: `1Gi`) |
+| `tls_enabled` | Enable HTTPS termination via APISIX + cert-manager (default: `false`) |
+| `tls_cert_manager_enable` | *(ask only if `tls_enabled = true`)* Generate a cert-manager `Certificate` (`true`) or reuse an existing cluster certificate (`false`) — default: `true` |
+| `tls_cluster_issuer` | *(ask only if `tls_cert_manager_enable = true`)* Name of the cert-manager `ClusterIssuer` |
+| `tls_existing_secret_name` | *(ask only if `tls_cert_manager_enable = false`)* Name of the pre-existing TLS Secret to reference |
+| `database_pooler_enable` | *(ask only if `has_database = true`)* Generate a CNPG `Pooler` (PgBouncer) (default: `false`) |
+| `database_backup_enable` | *(ask only if `has_database = true`)* Generate CNPG `ScheduledBackup` + `ObjectStore` (default: `false`) |
+| `backup_s3_bucket`, `backup_s3_endpoint`, `backup_credentials_secret_name`, `backup_retention_policy`, `backup_schedule` | *(ask only if `database_backup_enable = true`)* S3-compatible backend details for Barman Cloud Plugin |
+| `database_monitoring_enable` | *(ask only if `has_database = true`)* Generate a CNPG `PodMonitor` (default: `true`) |
+| `vault_dynamic_db_secrets_enable` | *(ask only if `has_database = true`)* Use Vault dynamic database credentials (`VaultDynamicSecret`) instead of/alongside static secrets (default: `false`) |
+| `cron_jobs` | *(ask only if `has_scheduled_tasks = true` after Step 1)* List of `{job_name, schedule, invocation}` — one per detected/confirmed scheduled task |
+| `grafana_dashboard_enable` | Generate a starter Grafana dashboard-as-code ConfigMap (default: `false`) |
 
 ---
 
@@ -113,6 +124,17 @@ Present findings to the user for confirmation. If nothing is detected, ask expli
 - `has_persistence = true` → ask `persistence_mount_path` (default: `/data`) and `persistence_size` (default: `1Gi`)
 - `has_persistence = false` → skip Step 3c
 
+**Scheduled-task detection** — scan the project for scheduling library usage and internal cron-style routes (see `references/rules.md` Rule 17 for exact patterns per stack):
+- `package.json` dependencies: `node-cron`, `node-schedule`, `agenda`, `bull`, `bullmq`; source routes matching `/api/cron/*`
+- `requirements.txt` / `pyproject.toml`: `celery` with `beat_schedule`, `APScheduler`
+- `go.mod`: `github.com/robfig/cron`
+- Source code: `@Scheduled` / `@EnableScheduling` annotations (Java)
+
+Present findings to the user for confirmation. If nothing is detected, ask explicitly: "Does this project have scheduled/cron tasks?"
+
+- `has_scheduled_tasks = true` → ask, for each job: `job_name`, `schedule` (cron expression), invocation mechanism (`http:<path>` or `command:<command>`)
+- `has_scheduled_tasks = false` → skip Step 3d
+
 ### Step 2 — Check for existing ServiceMonitor
 
 - `helm`: look in `helm/templates/prometheus/` for any `ServiceMonitor` template
@@ -183,6 +205,13 @@ Generate a **Cluster CR** and a **Database CR** using the schemas from `referenc
 
 Use CR templates from `references/rules.md` Rule 13.
 
+**Also generate, per their own flags (all default `false` except monitoring, which defaults `true`):**
+- `database_pooler_enable = true` → generate the `Pooler` CR (Rule 13a)
+- `database_backup_enable = true` → generate `ObjectStore` + `ScheduledBackup` CRs (Rule 13b), and add the `spec.backup`/`spec.plugins` block to the Cluster CR from this step
+- `database_monitoring_enable = true` (default) → generate the `PodMonitor` CR (Rule 13c)
+
+Do **not** generate a `ClusterImageCatalog` — see Rule 13d for why (cluster-scoped, shared across projects, out of scope for per-project scaffolding).
+
 Output path:
 - `helm`: `helm/templates/database/`
 - `kustomize`: `kubernetes/base/database/` + `kustomization.yaml` (kind: Component)
@@ -200,6 +229,18 @@ Also update every Deployment from Step 3 to add `volumeMounts` (container level)
 Output path:
 - `helm`: `helm/templates/app/pvc.yaml`
 - `kustomize`: `kubernetes/base/app/pvc.yaml` — add to `kubernetes/base/app/kustomization.yaml`
+
+---
+
+### Step 3d — CronJob manifests
+
+Skip if `has_scheduled_tasks = false`.
+
+Generate one `CronJob` per confirmed job using the template from `references/rules.md` Rule 17. Use the `http:<path>` variant (calls the app's own Service) by default; if the user specified `command:<command>` instead, replace the container image/command accordingly.
+
+Output path:
+- `helm`: `helm/templates/cron/cronjob.yaml` (single template, `{{- range .Values.cronJobs.jobs }}`)
+- `kustomize`: `kubernetes/base/cron/cronjob-<job_name>.yaml` (one file per job) + `kustomization.yaml`
 
 ---
 
@@ -228,6 +269,22 @@ Verify API versions against cluster: `kubectl get crd | grep hashicorp` (vault-s
 
 ---
 
+### Step 4b — Vault Dynamic Secrets (database credentials)
+
+Skip if `has_database = false` or `vault_dynamic_db_secrets_enable = false`.
+
+Generate a `VaultDynamicSecret` CR (Rule 16) that issues dynamic database credentials via Vault's `database` secrets engine, with `rolloutRestartTargets` pointing at every Deployment from Step 3 that connects to the database.
+
+> Prerequisite (out-of-cluster): Vault's `database` secrets engine must already be mounted with a role issuing credentials at `creds/<project>`. Flag this in the output summary if unconfirmed.
+
+Also ensure every Deployment generated in Step 3 uses the `RollingUpdate{maxUnavailable: 0, maxSurge: 1}` strategy from Rule 10/16 — this applies regardless of whether this step runs, but is especially relevant here since it makes the rollout triggered by `rolloutRestartTargets` safe.
+
+Output path:
+- `helm`: `helm/templates/vault/dynamicsecret.yaml`
+- `kustomize`: `kubernetes/base/vault/dynamicsecret.yaml`
+
+---
+
 ### Step 5 — APISIX manifests
 
 One `ApisixRoute` CR with one `http` entry per service.
@@ -243,6 +300,21 @@ Output path:
 - `kustomize`: `kubernetes/base/apisix/` + `kustomization.yaml`
 
 Use the CR templates from `references/rules.md` Rule 5.
+
+---
+
+### Step 5b — TLS manifests
+
+Skip if `tls_enabled = false` (default — preserves current HTTP-only behavior).
+
+Generate `ApisixTls` always (when `tls_enabled = true`); generate the cert-manager `Certificate` CR only if `tls_cert_manager_enable = true` — otherwise `ApisixTls` references `tls_existing_secret_name` directly. Use the templates from `references/rules.md` Rule 15. Keep `ApisixTls.spec.hosts` in sync with the `ApisixRoute.spec.http[].match.hosts` generated in Step 5.
+
+> Prerequisite (cert-manager mode): cert-manager must be running with the named `ClusterIssuer` already configured. Flag in the output summary if unconfirmed.
+> Prerequisite (existing-secret mode): the named Secret must already exist in the project namespace. Flag in the output summary if unconfirmed.
+
+Output path:
+- `helm`: `helm/templates/tls/`
+- `kustomize`: `kubernetes/base/tls/` + `kustomization.yaml` (kind: Component)
 
 ---
 
@@ -285,7 +357,9 @@ Add the stack-specific auto-injection annotation to every **Deployment** (from S
 
 Use the CR templates from `references/rules.md` Rule 3b.
 
-Output path — ServiceMonitor:
+**Grafana dashboard** — skip if `grafana_dashboard_enable = false` (default). Generate the starter ConfigMap from `references/rules.md` Rule 18 and flag in the output summary that the user must customize the panels before relying on it.
+
+Output path — ServiceMonitor / Grafana dashboard:
 - `helm`: `helm/templates/prometheus/`
 - `kustomize`: `kubernetes/base/prometheus/` + `kustomization.yaml`
 
@@ -534,14 +608,21 @@ Actions: `Created` (new), `Skipped` (correctly absent — e.g. an optional area 
 | `helm/templates/app/` | Created | N deployments (securityContext, volumeMounts/volumes if persistence), N services, N configmaps |
 | `helm/templates/app/pvc.yaml` | Created / Skipped | PVC (if has_persistence); gated by `persistence.enabled` in values |
 | `helm/templates/vault/` | Created / Skipped | Secrets found: yes/no; includes novlok-operator VaultAuth/VaultPolicy/VaultKubernetesRole |
+| `helm/templates/vault/dynamicsecret.yaml` | Created / Skipped | VaultDynamicSecret + rolloutRestartTargets (if vault_dynamic_db_secrets_enable) |
 | `helm/templates/database/` | Created / Skipped | CNPG Cluster + Database CR (if has_database); `database.cluster.enable: false` in all values files |
+| `helm/templates/database/pooler.yaml` | Created / Skipped | Pooler/PgBouncer (if database.cluster.pooler.enable) |
+| `helm/templates/database/backup.yaml` | Created / Skipped | ObjectStore + ScheduledBackup (if database.cluster.backup.enable) |
+| `helm/templates/database/podmonitor.yaml` | Created / Skipped | Postgres PodMonitor (if database.cluster.monitoring.enable, default true) |
 | `helm/templates/apisix/` | Created | Route + N upstreams |
+| `helm/templates/tls/` | Created / Skipped | Certificate (if tls.certManager.enable) + ApisixTls (if tls.enabled) |
 | `helm/templates/cloudflare/` | Created | kind: Record, serviceRef: apisix-gateway |
 | `helm/templates/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
+| `helm/templates/prometheus/grafana-dashboard.yaml` | Created / Skipped | Starter dashboard ConfigMap (if prometheus.grafanaDashboard.enable) — customize panels before relying on it |
 | `helm/templates/otel/` | Created / Skipped | Instrumentation CR (if otel.autoinstrumentation.enable) |
 | `helm/templates/alertmanager/` | Created | — |
 | `helm/templates/autoscaling/` | Created | HPA + KEDA templates; active type set by `autoscaling.type` in values.yaml |
 | `helm/templates/cilium/` | Created | mTLS ingress+egress; SPIRE required |
+| `helm/templates/cron/` | Created / Skipped | N CronJobs (if has_scheduled_tasks) |
 | `argocd/` | Created | Application (multi-source) + Secret |
 | `Dockerfile` / `docker-build/Dockerfile` | Created | React → `docker-build/Dockerfile`; all other stacks → project root |
 | `docker-build/entrypoint.sh` | Created / Skipped | React + Keycloak only; replaces KEYCLOAK_URL/REALM/CLIENT_ID/API_URL placeholders at startup |
@@ -556,14 +637,21 @@ Actions: `Created` (new), `Skipped` (correctly absent — e.g. an optional area 
 | `kubernetes/base/app/` | Created | N deployments (securityContext, volumeMounts/volumes if persistence), N services, N configmaps |
 | `kubernetes/base/app/pvc.yaml` | Created / Skipped | PVC (if has_persistence); listed in app/kustomization.yaml |
 | `kubernetes/base/vault/` | Created / Skipped | Secrets found: yes/no; includes novlok-operator VaultAuth/VaultPolicy/VaultKubernetesRole |
+| `kubernetes/base/vault/dynamicsecret.yaml` | Created / Skipped | VaultDynamicSecret + rolloutRestartTargets (if vault_dynamic_db_secrets_enable) |
 | `kubernetes/base/database/` | Created / Skipped | CNPG Cluster + Database CR as Kustomize Component (if has_database); overlays opt in by uncommenting `components` block |
+| `kubernetes/base/database/pooler.yaml` | Created / Skipped | Pooler/PgBouncer (if database.cluster.pooler.enable); listed in database Component |
+| `kubernetes/base/database/backup.yaml` | Created / Skipped | ObjectStore + ScheduledBackup (if database.cluster.backup.enable); listed in database Component |
+| `kubernetes/base/database/podmonitor.yaml` | Created / Skipped | Postgres PodMonitor (if database.cluster.monitoring.enable, default true); listed in database Component |
 | `kubernetes/base/apisix/` | Created | Route + N upstreams |
+| `kubernetes/base/tls/` | Created / Skipped | Certificate (if tls.certManager.enable) + ApisixTls as Kustomize Component (if tls.enabled); overlays opt in by uncommenting `components` block |
 | `kubernetes/base/cloudflare/` | Created | kind: Record, serviceRef: apisix-gateway |
 | `kubernetes/base/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
+| `kubernetes/base/prometheus/grafana-dashboard.yaml` | Created / Skipped | Starter dashboard ConfigMap (if prometheus.grafanaDashboard.enable) — customize panels before relying on it |
 | `kubernetes/base/otel/` | Created / Skipped | Instrumentation CR (stack-specific, if otel.autoinstrumentation.enable) |
 | `kubernetes/base/alertmanager/` | Created | — |
 | `kubernetes/base/autoscaling/` | Created | HPA + KEDA templates; active type set by `autoscaling.type` in values.yaml |
 | `kubernetes/base/cilium/` | Created | mTLS ingress+egress; SPIRE required |
+| `kubernetes/base/cron/` | Created / Skipped | N CronJobs, one file per job (if has_scheduled_tasks) |
 | `kubernetes/overlays/dev|qua|prd/` | Created | replicas patch + image tag placeholder |
 | `argocd/` | Created | Application (single source, overlay path) + Secret |
 | `Dockerfile` / `docker-build/Dockerfile` | Created | React → `docker-build/Dockerfile`; all other stacks → project root |

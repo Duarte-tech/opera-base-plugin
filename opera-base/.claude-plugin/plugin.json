@@ -1,6 +1,6 @@
 {
   "name": "opera-base",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Operonix base plugin — scaffolds Kubernetes manifests, Dockerfiles and GitLab CI pipelines for Operonix projects. Skills: operonix-deploy (full project scaffold), yaml-gen (YAML from operational rules), dockerfile-scan (Trivy Dockerfile misconfiguration scan), image-scan (Trivy container image CVE and secret scan).",
   "author": {
     "name": "Operonix",

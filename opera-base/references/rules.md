@@ -12,14 +12,18 @@ Builds Kubernetes YAML manifests **and** a GitLab CI pipeline. No manual deploy 
 
 ```
 kubernetes/
-├── app/              → Deployment, ConfigMap, Service, Secret (only if no Vault)
+├── app/              → Deployment, ConfigMap, Service, Secret (only if no Vault), PVC (if has_persistence)
+├── database/         → CNPG Cluster, Database, Pooler, ScheduledBackup+ObjectStore, PodMonitor (if has_database)
 ├── apisix/           → ApisixRoute, ApisixUpstream
+├── tls/              → cert-manager Certificate, ApisixTls (if tls.enabled)
 ├── alertmanager/     → Alert rules
-├── prometheus/       → ServiceMonitor
+├── prometheus/       → ServiceMonitor, Grafana dashboard ConfigMap (optional)
 ├── cilium/           → CiliumNetworkPolicy
 ├── cloudflare/       → cloudflare.infra.novlok.com/v1 Record (novlok-operator)
+├── cron/             → CronJob (if has_scheduled_tasks)
 └── vault/            → VaultAuth, VaultStaticSecret (vault-secrets-operator)
                         + VaultAuth, VaultPolicy, VaultKubernetesRole (novlok-operator)
+                        + VaultDynamicSecret (if vault_dynamic_db_secrets_enable)
 ```
 
 > This structure is the *current* target — on every run, reconcile it against what's already in the project (see `SKILL.md` → Reconciliation rule) rather than assuming an existing file or folder is already correct.
@@ -874,23 +878,36 @@ helm/
     ├── apisix/
     │   ├── route.yaml
     │   └── upstream.yaml
+    ├── tls/
+    │   ├── certificate.yaml
+    │   └── apisixtls.yaml
     ├── vault/
     │   ├── connection.yaml
     │   ├── auth.yaml
     │   ├── staticsecret.yaml
     │   ├── novlok-auth.yaml
     │   ├── policy.yaml
-    │   └── role.yaml
+    │   ├── role.yaml
+    │   └── dynamicsecret.yaml
     ├── cilium/
     │   └── networkpolicy.yaml
     ├── prometheus/
-    │   └── servicemonitor.yaml
+    │   ├── servicemonitor.yaml
+    │   └── grafana-dashboard.yaml
     ├── otel/
     │   └── instrumentation.yaml
     ├── alertmanager/
     │   └── prometheusrule.yaml
     ├── autoscaling/
     │   └── autoscaling.yaml
+    ├── cron/
+    │   └── cronjob.yaml
+    ├── database/
+    │   ├── cluster.yaml
+    │   ├── database.yaml
+    │   ├── pooler.yaml
+    │   ├── backup.yaml
+    │   └── podmonitor.yaml
     └── cloudflare/
         └── record.yaml
 ```
@@ -926,11 +943,23 @@ vault:
   address: <vault_address>
 apisix:
   subdomain: <subdomain>
+tls:
+  enabled: false
+  certManager:
+    enable: true
+    clusterIssuer: prd-clusterissuer
+    duration: 2160h
+    renewBefore: 360h
+  existingSecretName: ""
+  hosts:
+  - <subdomain>.novlok.co
 prometheus:
   serviceMonitor:
     enable: true
   prometheusRules:
     enable: true
+  grafanaDashboard:
+    enable: false
   path: /metrics
   port: http
 otel:
@@ -961,6 +990,29 @@ database:
       size: 1Gi
     dbName: <project>_db
     dbOwner: <project>_user
+    pooler:
+      enable: false
+      instances: 1
+      poolMode: transaction
+      maxClientConn: "1000"
+      defaultPoolSize: "25"
+    backup:
+      enable: false
+      schedule: "0 0 3 * * *"
+      retentionPolicy: 3d
+      destinationPath: s3://<bucket>/<project>/backup-pg/
+      endpointURL: https://<s3-endpoint>
+      credentialsSecretName: <project>-s3-credentials
+    monitoring:
+      enable: true
+    vaultDynamicSecrets:
+      enable: false
+cronJobs:
+  enabled: false
+  jobs: []
+  # - name: quotas
+  #   schedule: "0 8 * * *"
+  #   path: /api/cron/quotas
 ```
 
 `values-qua.yaml` — staging/QA (complete, same resource profile as dev):
@@ -984,11 +1036,23 @@ vault:
   address: <vault_address>
 apisix:
   subdomain: <subdomain>
+tls:
+  enabled: false
+  certManager:
+    enable: true
+    clusterIssuer: prd-clusterissuer
+    duration: 2160h
+    renewBefore: 360h
+  existingSecretName: ""
+  hosts:
+  - <subdomain>.novlok.co
 prometheus:
   serviceMonitor:
     enable: true
   prometheusRules:
     enable: true
+  grafanaDashboard:
+    enable: false
   path: /metrics
   port: http
 otel:
@@ -1019,6 +1083,29 @@ database:
       size: 1Gi
     dbName: <project>_db
     dbOwner: <project>_user
+    pooler:
+      enable: false
+      instances: 1
+      poolMode: transaction
+      maxClientConn: "1000"
+      defaultPoolSize: "25"
+    backup:
+      enable: false
+      schedule: "0 0 3 * * *"
+      retentionPolicy: 3d
+      destinationPath: s3://<bucket>/<project>/backup-pg/
+      endpointURL: https://<s3-endpoint>
+      credentialsSecretName: <project>-s3-credentials
+    monitoring:
+      enable: true
+    vaultDynamicSecrets:
+      enable: false
+cronJobs:
+  enabled: false
+  jobs: []
+  # - name: quotas
+  #   schedule: "0 8 * * *"
+  #   path: /api/cron/quotas
 ```
 
 `values-prd.yaml` — production (complete, higher resources and replicas):
@@ -1042,11 +1129,23 @@ vault:
   address: <vault_address>
 apisix:
   subdomain: <subdomain>
+tls:
+  enabled: false
+  certManager:
+    enable: true
+    clusterIssuer: prd-clusterissuer
+    duration: 2160h
+    renewBefore: 360h
+  existingSecretName: ""
+  hosts:
+  - <subdomain>.novlok.co
 prometheus:
   serviceMonitor:
     enable: true
   prometheusRules:
     enable: true
+  grafanaDashboard:
+    enable: false
   path: /metrics
   port: http
 otel:
@@ -1077,6 +1176,29 @@ database:
       size: 10Gi
     dbName: <project>_db
     dbOwner: <project>_user
+    pooler:
+      enable: false
+      instances: 2
+      poolMode: transaction
+      maxClientConn: "1000"
+      defaultPoolSize: "25"
+    backup:
+      enable: false
+      schedule: "0 0 3 * * *"
+      retentionPolicy: 3d
+      destinationPath: s3://<bucket>/<project>/backup-pg/
+      endpointURL: https://<s3-endpoint>
+      credentialsSecretName: <project>-s3-credentials
+    monitoring:
+      enable: true
+    vaultDynamicSecrets:
+      enable: false
+cronJobs:
+  enabled: false
+  jobs: []
+  # - name: quotas
+  #   schedule: "0 8 * * *"
+  #   path: /api/cron/quotas
 ```
 
 ArgoCD Application CR references only the env-specific file via `valueFiles`:
@@ -1104,10 +1226,22 @@ kubernetes/
 │   │   ├── deployment.yaml
 │   │   ├── service.yaml
 │   │   ├── configmap.yaml
+│   │   ├── pvc.yaml               # if has_persistence
+│   │   └── kustomization.yaml
+│   ├── database/                  # kind: Component — if has_database (Rule 13)
+│   │   ├── cluster.yaml
+│   │   ├── database.yaml
+│   │   ├── pooler.yaml            # if database.cluster.pooler.enable (Rule 13a)
+│   │   ├── backup.yaml            # if database.cluster.backup.enable (Rule 13b)
+│   │   ├── podmonitor.yaml        # if database.cluster.monitoring.enable (Rule 13c)
 │   │   └── kustomization.yaml
 │   ├── apisix/
 │   │   ├── route.yaml
 │   │   ├── upstream.yaml
+│   │   └── kustomization.yaml
+│   ├── tls/                       # kind: Component — if tls.enabled (Rule 15)
+│   │   ├── certificate.yaml       # omitted if tls.certManager.enable=false
+│   │   ├── apisixtls.yaml
 │   │   └── kustomization.yaml
 │   ├── vault/
 │   │   ├── connection.yaml
@@ -1116,12 +1250,14 @@ kubernetes/
 │   │   ├── novlok-auth.yaml
 │   │   ├── policy.yaml
 │   │   ├── role.yaml
+│   │   ├── dynamicsecret.yaml     # if vault_dynamic_db_secrets_enable (Rule 16)
 │   │   └── kustomization.yaml
 │   ├── cilium/
 │   │   ├── networkpolicy.yaml
 │   │   └── kustomization.yaml
 │   ├── prometheus/
 │   │   ├── servicemonitor.yaml
+│   │   ├── grafana-dashboard.yaml # if prometheus.grafanaDashboard.enable (Rule 18)
 │   │   └── kustomization.yaml
 │   ├── otel/
 │   │   ├── instrumentation.yaml
@@ -1131,6 +1267,9 @@ kubernetes/
 │   │   └── kustomization.yaml
 │   ├── autoscaling/
 │   │   ├── autoscaling.yaml
+│   │   └── kustomization.yaml
+│   ├── cron/                      # if has_scheduled_tasks (Rule 17)
+│   │   ├── cronjob-<job_name>.yaml
 │   │   └── kustomization.yaml
 │   └── cloudflare/
 │       ├── record.yaml
@@ -1298,6 +1437,21 @@ Exceptions:
 - `readOnlyRootFilesystem: false` — only if the process requires writing to the local filesystem at runtime (e.g., temp files, Prisma engine). Document the reason in a comment.
 - `runAsUser` — override per stack if the base image enforces a different UID (e.g., `node:24-alpine` uses UID 1000 by default; align with the Dockerfile `USER` directive).
 
+### Rollout strategy (zero-downtime rollouts and secret-rotation restarts)
+
+Every generated `Deployment` also gets this `strategy` block, unconditionally — it is harmless at `replicaCount: 1` (the rollout briefly runs a second pod, then scales the old one down) and is a prerequisite for the `rolloutRestartTargets` wiring used by Vault Dynamic Secrets (Rule 16):
+
+```yaml
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+```
+
+> **Note:** only guarantees zero downtime when `replicas >= 2`. Dev environments typically run `replicaCount: 1` — mention this caveat in the output summary whenever `has_database=true` and `vault_dynamic_db_secrets_enable=true` but the target environment's `replicaCount` is `1`.
+
 ---
 
 ---
@@ -1406,6 +1560,9 @@ kind: Component
 resources:
 - cluster.yaml
 - database.yaml
+# - pooler.yaml       # remove this entry if the pooler is not needed (Rule 13a)
+# - backup.yaml       # remove this entry if scheduled backups are not needed (Rule 13b)
+# - podmonitor.yaml   # remove this entry if Postgres metrics scraping is not needed (Rule 13c)
 ```
 
 The top-level `kubernetes/base/kustomization.yaml` does **not** reference the database component.
@@ -1418,6 +1575,183 @@ Each overlay `kustomization.yaml` gets a commented-out opt-in block:
 ```
 
 > Kustomize components require kustomize v4.1.0+ or `kubectl` v1.21+.
+
+---
+
+## 13a. Pooler (PgBouncer connection pooling)
+
+Generated only when `database.cluster.enable = true` **and** `database.cluster.pooler.enable = true` (default `false` in all three env files).
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: <project>-pg-pooler-rw
+  namespace: <project>
+spec:
+  cluster:
+    name: <project>-pg
+  instances: 1                 # helm: {{ .Values.database.cluster.pooler.instances }}
+  type: rw
+  pgbouncer:
+    poolMode: transaction      # helm: {{ .Values.database.cluster.pooler.poolMode }}
+    parameters:
+      max_client_conn: "1000"  # helm: {{ .Values.database.cluster.pooler.maxClientConn | quote }}
+      default_pool_size: "25"  # helm: {{ .Values.database.cluster.pooler.defaultPoolSize | quote }}
+```
+
+Helm wraps this CR in `{{- if and .Values.database.cluster.enable .Values.database.cluster.pooler.enable }} ... {{- end }}`.
+
+**values.yaml schema addition** (inside `database.cluster`, default `enable: false` in all three env files):
+
+```yaml
+pooler:
+  enable: false
+  instances: 1
+  poolMode: transaction
+  maxClientConn: "1000"
+  defaultPoolSize: "25"
+```
+
+### Output paths
+
+| Format | Files |
+|--------|-------|
+| `helm` | `helm/templates/database/pooler.yaml` |
+| `kustomize` | `kubernetes/base/database/pooler.yaml` (listed in the database Component, see comment above) |
+
+---
+
+## 13b. ScheduledBackup + ObjectStore (Barman Cloud Plugin)
+
+Generated only when `database.cluster.backup.enable = true` (default `false`). Requires an S3-compatible bucket and a pre-existing Secret with credentials — document as a manual prerequisite in the output summary, same style as the existing `<project>-db-credentials` note in Rule 13.
+
+```yaml
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: <project>-pg-store
+  namespace: <project>
+spec:
+  retentionPolicy: 3d                       # helm: {{ .Values.database.cluster.backup.retentionPolicy }}
+  configuration:
+    destinationPath: s3://<bucket>/<project>/backup-pg/   # helm: {{ .Values.database.cluster.backup.destinationPath }}
+    endpointURL: https://<s3-endpoint>       # helm: {{ .Values.database.cluster.backup.endpointURL }}
+    s3Credentials:
+      accessKeyId:
+        key: ACCESS_KEY_ID
+        name: <project>-s3-credentials       # helm: {{ .Values.database.cluster.backup.credentialsSecretName }}
+      secretAccessKey:
+        key: ACCESS_SECRET_KEY
+        name: <project>-s3-credentials
+    data:
+      compression: gzip
+      immediateCheckpoint: false
+    wal:
+      compression: gzip
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: <project>-pg-backup
+  namespace: <project>
+spec:
+  schedule: "0 0 3 * * *"          # helm: {{ .Values.database.cluster.backup.schedule | quote }}
+  cluster:
+    name: <project>-pg
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  backupOwnerReference: cluster
+  immediate: true
+```
+
+Helm wraps both CRs in `{{- if and .Values.database.cluster.enable .Values.database.cluster.backup.enable }} ... {{- end }}`.
+
+**Cluster CR addition** — when `backup.enable = true`, also add this block to the base Cluster CR template (Rule 13):
+
+```yaml
+spec:
+  backup:
+    target: prefer-standby
+  plugins:
+  - name: barman-cloud.cloudnative-pg.io
+    isWALArchiver: true
+    parameters:
+      barmanObjectName: <project>-pg-store
+      serverName: <project>-pg
+```
+
+**values.yaml schema addition** (inside `database.cluster`, default `enable: false` in all three env files):
+
+```yaml
+backup:
+  enable: false
+  schedule: "0 0 3 * * *"
+  retentionPolicy: 3d
+  destinationPath: s3://<bucket>/<project>/backup-pg/
+  endpointURL: https://<s3-endpoint>
+  credentialsSecretName: <project>-s3-credentials
+```
+
+### Output paths
+
+| Format | Files |
+|--------|-------|
+| `helm` | `helm/templates/database/backup.yaml` |
+| `kustomize` | `kubernetes/base/database/backup.yaml` (listed in the database Component, see comment above) |
+
+---
+
+## 13c. PodMonitor (Postgres metrics — Prometheus Operator)
+
+Distinct from the app's `ServiceMonitor` (Rule 3a) — this is CNPG's own recommended way to scrape Postgres instance metrics. Default `database.cluster.monitoring.enable = true` (cheap, no real cost, consistent with the "observability on by default" convention already used for `prometheus.serviceMonitor.enable`). Generated only when `database.cluster.enable = true`.
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: <project>-pg
+  namespace: <project>
+  labels:
+    app.kubernetes.io/component: database
+    app.kubernetes.io/instance: <project>-pg
+    app.kubernetes.io/managed-by: cloudnative-pg
+    app.kubernetes.io/name: postgresql
+    cnpg.io/cluster: <project>-pg
+spec:
+  namespaceSelector: {}
+  podMetricsEndpoints:
+  - port: metrics
+  selector:
+    matchLabels:
+      cnpg.io/cluster: <project>-pg
+      cnpg.io/podRole: instance
+```
+
+Helm wraps this CR in `{{- if and .Values.database.cluster.enable .Values.database.cluster.monitoring.enable }} ... {{- end }}`.
+
+**values.yaml schema addition** (inside `database.cluster`, default `enable: true` in all three env files):
+
+```yaml
+monitoring:
+  enable: true
+```
+
+### Output paths
+
+| Format | Files |
+|--------|-------|
+| `helm` | `helm/templates/database/podmonitor.yaml` |
+| `kustomize` | `kubernetes/base/database/podmonitor.yaml` (listed in the database Component, see comment above) |
+
+---
+
+## 13d. Note — ClusterImageCatalog (documented, not generated)
+
+`ClusterImageCatalog` (`postgresql.cnpg.io/v1`) is **cluster-scoped** and meant to be shared by every CNPG cluster in a multi-tenant cluster — generating one per project would be wrong and would create naming collisions/duplication across projects. The plugin therefore keeps the existing simple approach: `spec.imageName: ghcr.io/cloudnative-pg/postgresql:<postgres_version>` (see the base Cluster CR template above).
+
+`spec.imageCatalogRef` (referencing a pre-existing, cluster-wide `ClusterImageCatalog`) is documented here only as an advanced, manually-adopted alternative — same style as the Rule 2 "Known gap" note: the plugin does not generate a `ClusterImageCatalog`, and assumes one is provisioned out-of-band at the cluster level if a project wants to use it instead of `imageName`.
 
 ---
 
@@ -1545,6 +1879,318 @@ persistence:
 |--------|-------|
 | `helm` | `helm/templates/app/pvc.yaml` |
 | `kustomize` | `kubernetes/base/app/pvc.yaml` (add to `kubernetes/base/app/kustomization.yaml`) |
+
+---
+
+## 15. TLS (cert-manager Certificate + ApisixTls)
+
+Generated only when `tls.enabled = true` (default `false` — preserves current HTTP-only behavior). Extends Rule 5 (APISIX) with HTTPS termination; kept as its own rule because it involves a second operator (cert-manager).
+
+Two sub-modes, controlled by `tls.certManager.enable`:
+
+| `tls.certManager.enable` | Behavior |
+|---|---|
+| `true` (default when `tls.enabled=true`) | Plugin generates a cert-manager `Certificate` CR; `ApisixTls` references the Secret it produces (`<project>-tls-secret`). |
+| `false` | No `Certificate` CR generated — the project reuses a certificate that already exists in the cluster. `ApisixTls` references `tls.existingSecretName` directly. |
+
+> **Prerequisite (cert-manager mode):** cert-manager must be running with a `ClusterIssuer` already configured. Verify: `kubectl get clusterissuer`.
+> **Prerequisite (existing-secret mode):** the named Secret (`tls.existingSecretName`) must already exist in the project namespace, of type `kubernetes.io/tls`.
+
+### Certificate CR (cert-manager, only if `tls.certManager.enable = true`)
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: <project>-certificate
+  namespace: <project>
+spec:
+  secretName: <project>-tls-secret
+  commonName: <subdomain>.novlok.co        # helm: {{ .Values.apisix.subdomain }}.novlok.co
+  dnsNames:
+  - <subdomain>.novlok.co                  # helm: {{- range .Values.tls.hosts }} - {{ . | quote }} {{- end }}
+  duration: 2160h                          # helm: {{ .Values.tls.certManager.duration }}
+  renewBefore: 360h                        # helm: {{ .Values.tls.certManager.renewBefore }}
+  privateKey:
+    rotationPolicy: Always
+  issuerRef:
+    name: <cluster_issuer>                 # helm: {{ .Values.tls.certManager.clusterIssuer }} — ask at runtime
+    kind: ClusterIssuer
+    group: cert-manager.io
+```
+
+Helm wraps this CR in `{{- if and .Values.tls.enabled .Values.tls.certManager.enable }} ... {{- end }}`.
+
+### ApisixTls CR (always, if `tls.enabled = true`)
+
+```yaml
+apiVersion: apisix.apache.org/v2
+kind: ApisixTls
+metadata:
+  name: <project>-tls
+  namespace: <project>
+spec:
+  hosts:
+  - <subdomain>.novlok.co                  # helm: {{- range .Values.tls.hosts }} - {{ . | quote }} {{- end }} — must match ApisixRoute match.hosts (Rule 5)
+  secret:
+    name: <project>-tls-secret             # if certManager.enable=false: {{ .Values.tls.existingSecretName }}
+    namespace: <project>
+```
+
+Helm wraps this CR in `{{- if .Values.tls.enabled }} ... {{- end }}`; the `secret.name` value is chosen with:
+```yaml
+secret:
+  name: {{ if .Values.tls.certManager.enable }}{{ include "<project>.fullname" . }}-tls-secret{{ else }}{{ .Values.tls.existingSecretName }}{{ end }}
+  namespace: {{ .Release.Namespace }}
+```
+
+### values.yaml schema (all three env files — default `enabled: false`)
+
+```yaml
+tls:
+  enabled: false
+  certManager:
+    enable: true
+    clusterIssuer: prd-clusterissuer   # ask at runtime
+    duration: 2160h
+    renewBefore: 360h
+  existingSecretName: ""              # used only when certManager.enable=false
+  hosts:
+  - <subdomain>.novlok.co             # keep in sync with ApisixRoute match.hosts (Rule 5)
+```
+
+### Kustomize — enable/disable via Component
+
+`kubernetes/base/tls/kustomization.yaml` must use `kind: Component` (same pattern as Rule 13's database Component):
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+- certificate.yaml   # omit this line entirely if reusing an existing certificate (certManager.enable=false)
+- apisixtls.yaml
+```
+
+The top-level `kubernetes/base/kustomization.yaml` does **not** reference the `tls` component. Each overlay gets a commented-out opt-in block:
+
+```yaml
+# components:
+# - ../../base/tls   # uncomment to enable TLS termination in this environment
+```
+
+### Output paths
+
+| Format | Files |
+|--------|-------|
+| `helm` | `helm/templates/tls/certificate.yaml`, `helm/templates/tls/apisixtls.yaml` |
+| `kustomize` | `kubernetes/base/tls/certificate.yaml`, `kubernetes/base/tls/apisixtls.yaml`, `kubernetes/base/tls/kustomization.yaml` (kind: Component) |
+
+---
+
+## 16. Vault Dynamic Secrets (database credentials) + zero-downtime rollout
+
+Scope: **specifically for CNPG database credentials** via Vault's `database` secrets engine — not a generic replacement for `VaultStaticSecret` (Rule 2), which remains the default for all other confidential secrets. Generated only when `has_database = true` and `vault_dynamic_db_secrets_enable = true` (default `false`).
+
+> **Prerequisite (out-of-cluster, same style as the Rule 2 KV-mount gap):** Vault must already have the `database` secrets engine mounted at path `database`, with a role named `<project>` issuing credentials at `creds/<project>`. This is provisioned out-of-band (e.g. `vault write database/roles/<project> ...`) — the plugin does not generate this configuration, only the Kubernetes-side CR that consumes it.
+
+### VaultDynamicSecret CR
+
+```yaml
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultDynamicSecret
+metadata:
+  name: <project>-database-secret
+  namespace: <project>
+spec:
+  destination:
+    create: true
+    name: db-<project>-secret
+    overwrite: false
+  mount: database
+  path: creds/<project>
+  vaultAuthRef: <project>-vault-auth      # reuses the vault-secrets-operator VaultAuth already generated in Rule 2
+  rolloutRestartTargets:
+  - kind: Deployment
+    name: <service>                      # one entry per service that connects to the database
+```
+
+Helm wraps this CR in `{{- if and .Values.database.cluster.enable .Values.database.cluster.vaultDynamicSecrets.enable }} ... {{- end }}`, with one `rolloutRestartTargets` entry per service via `{{- range .Values.services }}`.
+
+### Zero-downtime rollout strategy
+
+The `rolloutRestartTargets` above relies on every Deployment already using the `RollingUpdate{maxUnavailable: 0, maxSurge: 1}` strategy defined in Rule 10 — that strategy is applied unconditionally to all Deployments, not just when this rule is active, since without it a Vault-triggered restart would never be safe.
+
+### values.yaml schema (inside `database.cluster`)
+
+```yaml
+vaultDynamicSecrets:
+  enable: false
+```
+
+### Output paths
+
+| Format | Files |
+|--------|-------|
+| `helm` | `helm/templates/vault/dynamicsecret.yaml` |
+| `kustomize` | `kubernetes/base/vault/dynamicsecret.yaml` |
+
+---
+
+## 17. CronJob (scheduled tasks)
+
+Generated only when `has_scheduled_tasks = true` (see Step 1 detection in the skill). Supports multiple jobs per project.
+
+### Detection patterns (Step 1 — before asking the user)
+
+Scan the project for scheduling library usage and internal cron-style routes:
+
+| Stack | Patterns |
+|-------|----------|
+| Node.js | `package.json` dependencies: `node-cron`, `node-schedule`, `agenda`, `bull`, `bullmq` (repeatable jobs); source code routes matching `/api/cron/*` or similar |
+| Python | `requirements.txt` / `pyproject.toml`: `celery` with a `beat_schedule` config; `APScheduler` |
+| Go | `go.mod`: `github.com/robfig/cron` |
+| Java | Source code: `@Scheduled` or `@EnableScheduling` annotations |
+
+Always confirm the detected result with the user. If nothing is detected, ask explicitly: "Does this project have scheduled/cron tasks?"
+
+If `has_scheduled_tasks = true`, ask for each job:
+- `job_name`
+- `schedule` — cron expression
+- invocation mechanism: `http:<path>` (calls the app's own Service) or `command:<command>` (runs a standalone command in the CronJob container)
+
+### CronJob template (HTTP-trigger variant — canonical)
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: <project>-<job_name>
+  namespace: <project>
+spec:
+  schedule: "<cron_expression>"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: <project>-<job_name>
+        spec:
+          securityContext:              # reuse the pod-level securityContext from Rule 10
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          restartPolicy: OnFailure
+          containers:
+          - name: <project>-<job_name>
+            image: curlimages/curl:latest
+            securityContext:            # reuse the container-level securityContext from Rule 10
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            command:
+            - sh
+            - -c
+            - |
+              curl -sf -X POST -H "Authorization: Bearer $CRON_SECRET" \
+                http://<service>:<port>/<endpoint_path>
+            env:
+            - name: CRON_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: <project>-secrets     # the Vault-managed Secret from Rule 2, if present
+                  key: CRON_SECRET
+            resources:
+              requests:
+                cpu: 50m
+                memory: 32Mi
+              limits:
+                cpu: 100m
+                memory: 64Mi
+```
+
+For the `command:<command>` invocation mechanism, replace the `containers[0].image`/`command` with the project's own application image and the given command instead of `curlimages/curl` + `curl`.
+
+### values.yaml schema (Helm uses `range` over the jobs list)
+
+```yaml
+cronJobs:
+  enabled: false
+  jobs: []
+  # - name: quotas
+  #   schedule: "0 8 * * *"
+  #   path: /api/cron/quotas
+```
+
+### Output paths
+
+| Format | Files |
+|--------|-------|
+| `helm` | `helm/templates/cron/cronjob.yaml` (single template, `{{- range .Values.cronJobs.jobs }}`) |
+| `kustomize` | `kubernetes/base/cron/cronjob-<job_name>.yaml` (one file per job, hardcoded) + `kubernetes/base/cron/kustomization.yaml` |
+
+---
+
+## 18. Grafana dashboard-as-code (optional observability extra)
+
+Generated only when `prometheus.grafanaDashboard.enable = true` (default `false`). Since the plugin cannot know the application's actual custom metrics in advance, this generates only a **starter skeleton** with generic panels — flag in the output summary that the user must customize it.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: <project>-dashboard
+  namespace: <project>
+  labels:
+    app: <project>
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "<project>"
+data:
+  <project>-dashboard.json: |
+    {
+      "title": "<project> — Overview",
+      "uid": "<project>-overview",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-6h", "to": "now" },
+      "panels": [
+        { "id": 1, "type": "stat", "title": "Pod restarts",
+          "gridPos": { "x": 0, "y": 0, "w": 8, "h": 4 },
+          "targets": [{ "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"<project>\"})", "refId": "A" }] },
+        { "id": 2, "type": "timeseries", "title": "CPU usage",
+          "gridPos": { "x": 8, "y": 0, "w": 8, "h": 4 },
+          "targets": [{ "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"<project>\"}[5m]))", "refId": "A" }] },
+        { "id": 3, "type": "timeseries", "title": "HTTP request rate",
+          "gridPos": { "x": 16, "y": 0, "w": 8, "h": 4 },
+          "targets": [{ "expr": "sum(rate(http_requests_total{namespace=\"<project>\"}[5m]))", "refId": "A" }] }
+      ]
+    }
+```
+
+Helm wraps the whole resource in `{{- if .Values.prometheus.grafanaDashboard.enable }} ... {{- end }}`.
+
+> **Prerequisite:** the Grafana sidecar dashboard-discovery convention must be active in the cluster (watches for ConfigMaps labeled `grafana_dashboard: "1"`).
+
+### values.yaml schema (inside `prometheus`)
+
+```yaml
+grafanaDashboard:
+  enable: false
+```
+
+### Output paths
+
+| Format | Files |
+|--------|-------|
+| `helm` | `helm/templates/prometheus/grafana-dashboard.yaml` |
+| `kustomize` | `kubernetes/base/prometheus/grafana-dashboard.yaml` |
 
 ---
 
