@@ -175,12 +175,16 @@ For each service in `services`:
 
 Skip if `has_database = false`.
 
-Generate a **Cluster CR** and a **Database CR** using the schemas from `references/rules.md` Rule 13.
+Generate an **ImageCatalog CR**, a **Cluster CR**, and a **Database CR** using the schemas from `references/rules.md` Rule 13.
+
+**ImageCatalog CR** (`postgresql.cnpg.io/v1`, kind `ImageCatalog` — namespaced, one per project, no cross-project collision risk):
+- `metadata.name`: `<project>-postgresql`
+- `spec.images`: single entry — `major`/`image` tag from `postgres_version` (helm: `{{ .Values.database.cluster.postgresVersion | int }}` / `{{ .Values.database.cluster.postgresVersion }}`)
 
 **Cluster CR** (`postgresql.cnpg.io/v1`, kind `Cluster`):
 - `metadata.name`: `<project>-db`
 - `spec.instances`: helm `{{ .Values.database.cluster.instances }}`; kustomize hardcode per env (dev/qua: `1`, prd: `3`)
-- `spec.imageName`: helm `ghcr.io/cloudnative-pg/postgresql:{{ .Values.database.cluster.postgresVersion }}`; kustomize hardcode `ghcr.io/cloudnative-pg/postgresql:<postgres_version>`
+- `spec.imageCatalogRef`: references the `ImageCatalog` CR above (`apiGroup: postgresql.cnpg.io`, `kind: ImageCatalog`, `name: <project>-postgresql`, `major` = `postgres_version`) — replaces the old `spec.imageName` shorthand
 - `spec.storage.size`: helm `{{ .Values.database.cluster.storage.size }}`; kustomize hardcode (dev/qua: `1Gi`, prd: `10Gi`)
 - `spec.bootstrap.initdb.database`: helm `{{ .Values.database.cluster.dbName }}`; kustomize hardcode `<db_name>`
 - `spec.bootstrap.initdb.owner`: helm `{{ .Values.database.cluster.dbOwner }}`; kustomize hardcode `<project>_user`
@@ -192,7 +196,7 @@ Generate a **Cluster CR** and a **Database CR** using the schemas from `referenc
 - `spec.owner`: helm `{{ .Values.database.cluster.dbOwner }}`; kustomize hardcode `<project>_user`
 - `spec.cluster.name`: `<project>-db`
 
-**Helm:** wrap both CRs in `{{- if .Values.database.cluster.enable }}` … `{{- end }}`.
+**Helm:** wrap all three CRs (ImageCatalog, Cluster, Database) in `{{- if .Values.database.cluster.enable }}` … `{{- end }}`.
 
 **Kustomize:**
 - Generate `kubernetes/base/database/kustomization.yaml` with `kind: Component` (not `kind: Kustomization`) — this prevents it from being auto-included by the base.
@@ -210,7 +214,7 @@ Use CR templates from `references/rules.md` Rule 13.
 - `database_backup_enable = true` → generate `ObjectStore` + `ScheduledBackup` CRs (Rule 13b), and add the `spec.backup`/`spec.plugins` block to the Cluster CR from this step
 - `database_monitoring_enable = true` (default) → generate the `PodMonitor` CR (Rule 13c)
 
-Do **not** generate a `ClusterImageCatalog` — see Rule 13d for why (cluster-scoped, shared across projects, out of scope for per-project scaffolding).
+Do **not** generate a `ClusterImageCatalog` — see Rule 13d for why (cluster-scoped, shared across projects, out of scope for per-project scaffolding). The namespaced `ImageCatalog` generated above is a different kind and has no such restriction.
 
 Output path:
 - `helm`: `helm/templates/database/`
@@ -609,7 +613,7 @@ Actions: `Created` (new), `Skipped` (correctly absent — e.g. an optional area 
 | `helm/templates/app/pvc.yaml` | Created / Skipped | PVC (if has_persistence); gated by `persistence.enabled` in values |
 | `helm/templates/vault/` | Created / Skipped | Secrets found: yes/no; includes novlok-operator VaultAuth/VaultPolicy/VaultKubernetesRole |
 | `helm/templates/vault/dynamicsecret.yaml` | Created / Skipped | VaultDynamicSecret + rolloutRestartTargets (if vault_dynamic_db_secrets_enable) |
-| `helm/templates/database/` | Created / Skipped | CNPG Cluster + Database CR (if has_database); `database.cluster.enable: false` in all values files |
+| `helm/templates/database/` | Created / Skipped | CNPG ImageCatalog + Cluster + Database CR (if has_database); `database.cluster.enable: false` in all values files |
 | `helm/templates/database/pooler.yaml` | Created / Skipped | Pooler/PgBouncer (if database.cluster.pooler.enable) |
 | `helm/templates/database/backup.yaml` | Created / Skipped | ObjectStore + ScheduledBackup (if database.cluster.backup.enable) |
 | `helm/templates/database/podmonitor.yaml` | Created / Skipped | Postgres PodMonitor (if database.cluster.monitoring.enable, default true) |
@@ -638,7 +642,7 @@ Actions: `Created` (new), `Skipped` (correctly absent — e.g. an optional area 
 | `kubernetes/base/app/pvc.yaml` | Created / Skipped | PVC (if has_persistence); listed in app/kustomization.yaml |
 | `kubernetes/base/vault/` | Created / Skipped | Secrets found: yes/no; includes novlok-operator VaultAuth/VaultPolicy/VaultKubernetesRole |
 | `kubernetes/base/vault/dynamicsecret.yaml` | Created / Skipped | VaultDynamicSecret + rolloutRestartTargets (if vault_dynamic_db_secrets_enable) |
-| `kubernetes/base/database/` | Created / Skipped | CNPG Cluster + Database CR as Kustomize Component (if has_database); overlays opt in by uncommenting `components` block |
+| `kubernetes/base/database/` | Created / Skipped | CNPG ImageCatalog + Cluster + Database CR as Kustomize Component (if has_database); overlays opt in by uncommenting `components` block |
 | `kubernetes/base/database/pooler.yaml` | Created / Skipped | Pooler/PgBouncer (if database.cluster.pooler.enable); listed in database Component |
 | `kubernetes/base/database/backup.yaml` | Created / Skipped | ObjectStore + ScheduledBackup (if database.cluster.backup.enable); listed in database Component |
 | `kubernetes/base/database/podmonitor.yaml` | Created / Skipped | Postgres PodMonitor (if database.cluster.monitoring.enable, default true); listed in database Component |

@@ -65,7 +65,7 @@ helm/<project>/
     ├── serviceaccount.yaml
     ├── app/              Deployment (securityContext, RollingUpdate strategy), Service, ConfigMap, PVC (if persistence detected)
     ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret + novlok-operator VaultAuth, VaultPolicy, VaultKubernetesRole (if secrets found); VaultDynamicSecret (if vault_dynamic_db_secrets_enable)
-    ├── database/         CNPG Cluster + Database CR (if database detected; enable per env via values); Pooler, ScheduledBackup+ObjectStore, PodMonitor (per their own flags)
+    ├── database/         CNPG ImageCatalog + Cluster + Database CR (if database detected; enable per env via values); Pooler, ScheduledBackup+ObjectStore, PodMonitor (per their own flags)
     ├── apisix/           ApisixRoute, ApisixUpstream
     ├── tls/              cert-manager Certificate + ApisixTls (if tls.enabled)
     ├── alertmanager/     PrometheusRule
@@ -96,7 +96,7 @@ kubernetes/
 │   ├── serviceaccount.yaml
 │   ├── app/              Deployment (securityContext, RollingUpdate strategy), Service, ConfigMap, PVC (if persistence detected)
 │   ├── vault/            VaultConnection, VaultAuth, VaultStaticSecret + novlok-operator VaultAuth, VaultPolicy, VaultKubernetesRole (if secrets found); VaultDynamicSecret (if vault_dynamic_db_secrets_enable)
-│   ├── database/         CNPG Cluster + Database CR as Kustomize Component (if database detected; overlays opt in); Pooler, ScheduledBackup+ObjectStore, PodMonitor (per their own flags, same Component)
+│   ├── database/         CNPG ImageCatalog + Cluster + Database CR as Kustomize Component (if database detected; overlays opt in); Pooler, ScheduledBackup+ObjectStore, PodMonitor (per their own flags, same Component)
 │   ├── apisix/           ApisixRoute, ApisixUpstream
 │   ├── tls/              cert-manager Certificate + ApisixTls as Kustomize Component (if tls.enabled; overlays opt in)
 │   ├── alertmanager/     PrometheusRule
