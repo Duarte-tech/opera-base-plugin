@@ -477,6 +477,77 @@ Use port `80` for `http://`, `443` for `https://`. The existing CoreDNS rule alr
 
 ---
 
+### 7c. Cilium — CNPG cross-namespace rules
+
+The base policy (intra-namespace mTLS) already covers app↔Pooler↔Postgres-instance traffic since CNPG runs in the same project namespace. It does **not** cover traffic that legitimately crosses namespace boundaries to reach the database — each rule below is appended only when the feature that needs it is active. Do not fragment into multiple `CiliumClusterwideNetworkPolicy` objects — append these as extra `ingress`/`egress` entries on the same per-project `CiliumNetworkPolicy` from Rule 7.
+
+**Vault → DB instance** (dynamic secrets engine creating/rotating roles) — only when `vault_dynamic_db_secrets_enable = true` (Rule 16):
+```yaml
+ingress:
+- fromEndpoints:
+  - matchLabels:
+      io.kubernetes.pod.namespace: vault
+  toEndpoints:
+  - matchLabels:
+      cnpg.io/podRole: instance
+  toPorts:
+  - ports:
+    - port: "5432"
+      protocol: TCP
+  authentication:
+    mode: required
+```
+
+**CNPG operator → DB instance** (management/metrics) — always, whenever `has_database = true`:
+```yaml
+ingress:
+- fromEndpoints:
+  - matchLabels:
+      io.kubernetes.pod.namespace: <cnpg_operator_namespace>   # ask at runtime, default: cnpg-system
+  toEndpoints:
+  - matchLabels:
+      cnpg.io/podRole: instance
+  toPorts:
+  - ports:
+    - port: "5432"
+      protocol: TCP
+    - port: "8000"
+      protocol: TCP
+    - port: "9187"
+      protocol: TCP
+  authentication:
+    mode: required
+```
+
+**Prometheus → DB instance** (metrics scrape) — only when `database.cluster.monitoring.enable = true` (Rule 13c):
+```yaml
+ingress:
+- fromEndpoints:
+  - matchLabels:
+      io.kubernetes.pod.namespace: <monitoring_namespace>       # ask at runtime
+  toEndpoints:
+  - matchLabels:
+      cnpg.io/podRole: instance
+  toPorts:
+  - ports:
+    - port: "9187"
+      protocol: TCP
+```
+> Generating the `PodMonitor` (Rule 13c) without this rule leaves Prometheus unable to reach port 9187 — the scrape silently fails even though the PodMonitor object exists (a real gap found in production).
+
+**DB instance → object storage** (WAL archiving) — only when `database.cluster.backup.enable = true` (Rule 13b):
+```yaml
+egress:
+- toEntities:
+  - world
+  toPorts:
+  - ports:
+    - port: "443"
+      protocol: TCP
+```
+
+---
+
 ## 8. GitLab CI Pipeline
 
 ### Stack detection (auto-detect from project root)
@@ -888,7 +959,10 @@ helm/
     │   ├── novlok-auth.yaml
     │   ├── policy.yaml
     │   ├── role.yaml
-    │   └── dynamicsecret.yaml
+    │   ├── databasemount.yaml       # if database.cluster.vaultDynamicSecrets.enable (Rule 16)
+    │   ├── databaseconnection.yaml  # if database.cluster.vaultDynamicSecrets.enable (Rule 16)
+    │   ├── databaserole.yaml        # if database.cluster.vaultDynamicSecrets.enable (Rule 16)
+    │   └── dynamicsecret.yaml       # if database.cluster.vaultDynamicSecrets.enable (Rule 16)
     ├── cilium/
     │   └── networkpolicy.yaml
     ├── prometheus/
@@ -908,7 +982,9 @@ helm/
     │   ├── database.yaml
     │   ├── pooler.yaml
     │   ├── backup.yaml
-    │   └── podmonitor.yaml
+    │   ├── podmonitor.yaml
+    │   ├── databaserole.yaml   # if database.cluster.roles.enable (Rule 13e)
+    │   └── certificate.yaml    # if database.cluster.tls.enable (Rule 13g)
     └── cloudflare/
         └── record.yaml
 ```
@@ -989,8 +1065,29 @@ database:
     postgresVersion: "16"
     storage:
       size: 1Gi
+      storageClass: ""
+      resizeInUseVolumes: true
+    walStorage:
+      enable: false
+      size: 2Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
     dbName: <project>_db
     dbOwner: <project>_user
+    superuser:
+      enable: false
+    roles:
+      enable: false
+    tls:
+      enable: false
+      clusterIssuer: prd-clusterissuer
+      caSecretName: ""
     pooler:
       enable: false
       instances: 1
@@ -1007,6 +1104,8 @@ database:
     monitoring:
       enable: true
     vaultDynamicSecrets:
+      enable: false
+    migrationRole:
       enable: false
 cronJobs:
   enabled: false
@@ -1082,8 +1181,29 @@ database:
     postgresVersion: "16"
     storage:
       size: 1Gi
+      storageClass: ""
+      resizeInUseVolumes: true
+    walStorage:
+      enable: false
+      size: 2Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
     dbName: <project>_db
     dbOwner: <project>_user
+    superuser:
+      enable: false
+    roles:
+      enable: false
+    tls:
+      enable: false
+      clusterIssuer: prd-clusterissuer
+      caSecretName: ""
     pooler:
       enable: false
       instances: 1
@@ -1100,6 +1220,8 @@ database:
     monitoring:
       enable: true
     vaultDynamicSecrets:
+      enable: false
+    migrationRole:
       enable: false
 cronJobs:
   enabled: false
@@ -1175,8 +1297,29 @@ database:
     postgresVersion: "16"
     storage:
       size: 10Gi
+      storageClass: ""
+      resizeInUseVolumes: true
+    walStorage:
+      enable: false
+      size: 20Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: "1"
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 1Gi
     dbName: <project>_db
     dbOwner: <project>_user
+    superuser:
+      enable: false
+    roles:
+      enable: false
+    tls:
+      enable: false
+      clusterIssuer: prd-clusterissuer
+      caSecretName: ""
     pooler:
       enable: false
       instances: 2
@@ -1193,6 +1336,8 @@ database:
     monitoring:
       enable: true
     vaultDynamicSecrets:
+      enable: false
+    migrationRole:
       enable: false
 cronJobs:
   enabled: false
@@ -1236,6 +1381,8 @@ kubernetes/
 │   │   ├── pooler.yaml            # if database.cluster.pooler.enable (Rule 13a)
 │   │   ├── backup.yaml            # if database.cluster.backup.enable (Rule 13b)
 │   │   ├── podmonitor.yaml        # if database.cluster.monitoring.enable (Rule 13c)
+│   │   ├── databaserole.yaml      # if database.cluster.roles.enable (Rule 13e)
+│   │   ├── certificate.yaml       # if database.cluster.tls.enable (Rule 13g)
 │   │   └── kustomization.yaml
 │   ├── apisix/
 │   │   ├── route.yaml
@@ -1252,6 +1399,9 @@ kubernetes/
 │   │   ├── novlok-auth.yaml
 │   │   ├── policy.yaml
 │   │   ├── role.yaml
+│   │   ├── databasemount.yaml     # if vault_dynamic_db_secrets_enable (Rule 16)
+│   │   ├── databaseconnection.yaml # if vault_dynamic_db_secrets_enable (Rule 16)
+│   │   ├── databaserole.yaml      # if vault_dynamic_db_secrets_enable (Rule 16)
 │   │   ├── dynamicsecret.yaml     # if vault_dynamic_db_secrets_enable (Rule 16)
 │   │   └── kustomization.yaml
 │   ├── cilium/
@@ -1528,6 +1678,77 @@ spec:
 
 > `bootstrap.initdb.secret` must be a pre-existing Kubernetes `Secret` in the project namespace with keys `username` and `password`. Route it through Vault (VaultStaticSecret) if the project uses Vault for secrets; otherwise document it as a manual prerequisite in the output summary.
 
+### Cluster CR — advanced/production fields (opt-in)
+
+The base Cluster CR above is the safe minimum. Each block below is additive, independently gated by its own `values.yaml` key (default `false` unless noted), and only rendered when enabled — a project that leaves everything off gets exactly the base CR above, no behavior change.
+
+**Superuser access** — gated `database.cluster.superuser.enable` (default `false`):
+```yaml
+spec:
+  enableSuperuserAccess: true
+  superuserSecret:
+    name: <project>-db-superuser     # pre-existing Secret, keys username/password — same conventions as bootstrap.initdb.secret
+```
+
+**Storage tuning** — `resizeInUseVolumes` always rendered (`true`, no gate); `storageClass` asked at runtime or defaults to the cluster's default StorageClass:
+```yaml
+spec:
+  storage:
+    size: 1Gi                                          # helm: {{ .Values.database.cluster.storage.size }}
+    storageClass: <storage_class>                      # helm: {{ .Values.database.cluster.storage.storageClass }}
+    resizeInUseVolumes: true
+```
+
+**Separate WAL volume** — gated `database.cluster.walStorage.enable` (default `false`):
+```yaml
+spec:
+  walStorage:
+    size: 2Gi                                          # helm: {{ .Values.database.cluster.walStorage.size }}
+    storageClass: <storage_class>                      # helm: {{ .Values.database.cluster.walStorage.storageClass }}
+    resizeInUseVolumes: true
+```
+
+**Resources** — always rendered with sensible defaults (`database.cluster.resources.*`):
+```yaml
+spec:
+  resources:
+    requests:
+      cpu: 500m                                        # helm: {{ .Values.database.cluster.resources.requests.cpu }}
+      memory: 512Mi                                     # helm: {{ .Values.database.cluster.resources.requests.memory }}
+    limits:
+      cpu: "1"                                          # helm: {{ .Values.database.cluster.resources.limits.cpu }}
+      memory: 1Gi                                       # helm: {{ .Values.database.cluster.resources.limits.memory }}
+```
+
+**PostgreSQL tuning parameters** — always rendered with a safe baseline; two entries are conditional:
+```yaml
+spec:
+  postgresql:
+    parameters:
+      shared_buffers: 256MB
+      max_wal_size: 1GB
+      wal_level: logical
+      dynamic_shared_memory_type: posix
+      log_destination: csvlog
+      logging_collector: "on"
+      shared_preload_libraries: ""                     # see note below
+```
+> If `database.cluster.monitoring.enable = true` (Rule 13c), append `pg_stat_statements` to `shared_preload_libraries` and add `pg_stat_statements.max: "10000"` / `pg_stat_statements.track: all` to `parameters`. Never enable `pg_stat_statements.*` parameters while `shared_preload_libraries` is empty — the extension will not load and the settings are inert (a real misconfiguration found in production).
+> If `database.cluster.tls.enable = true` (Rule 13g below), add `ssl_min_protocol_version: TLSv1.3` / `ssl_max_protocol_version: TLSv1.3` to `parameters`.
+
+**High availability (only when `instances > 1`)**:
+```yaml
+spec:
+  enablePDB: true
+  primaryUpdateStrategy: unsupervised
+  minSyncReplicas: 1                                   # helm: {{ .Values.database.cluster.minSyncReplicas }}
+  maxSyncReplicas: 1                                    # helm: {{ .Values.database.cluster.maxSyncReplicas }}
+  replicationSlots:
+    highAvailability:
+      enabled: true
+```
+`enablePDB` defaults to `true` whenever `instances > 1`; omit entirely for single-instance clusters (a PDB with one instance blocks all voluntary disruption).
+
 ### Database CR (CNPG v1.22+)
 
 ```yaml
@@ -1589,6 +1810,8 @@ resources:
 # - pooler.yaml       # remove this entry if the pooler is not needed (Rule 13a)
 # - backup.yaml       # remove this entry if scheduled backups are not needed (Rule 13b)
 # - podmonitor.yaml   # remove this entry if Postgres metrics scraping is not needed (Rule 13c)
+# - databaserole.yaml # remove this entry if declarative role management is not needed (Rule 13e)
+# - certificate.yaml  # remove this entry if internal TLS is not needed (Rule 13g)
 ```
 
 The top-level `kubernetes/base/kustomization.yaml` does **not** reference the database component.
@@ -1757,6 +1980,8 @@ spec:
 
 Helm wraps this CR in `{{- if and .Values.database.cluster.enable .Values.database.cluster.monitoring.enable }} ... {{- end }}`.
 
+> **Consistency rule:** whenever this standalone `PodMonitor` is generated (`database.cluster.monitoring.enable = true`), the Cluster CR's own `spec.monitoring.enablePodMonitor` must be set to `false`. CNPG can generate its own PodMonitor from that field — leaving both active produces two PodMonitors scraping the same targets (a duplicate-scrape misconfiguration found in production). Add `enablePodMonitor: false` under `spec.monitoring` in the base Cluster CR (Rule 13) whenever this rule is active.
+
 **values.yaml schema addition** (inside `database.cluster`, default `enable: true` in all three env files):
 
 ```yaml
@@ -1778,6 +2003,138 @@ monitoring:
 `ClusterImageCatalog` (`postgresql.cnpg.io/v1`) is **cluster-scoped** and meant to be shared by every CNPG cluster in a multi-tenant cluster — generating one per project would be wrong and would create naming collisions/duplication across projects. The plugin does not generate it, and assumes one is provisioned out-of-band at the cluster level if a project wants to reference a shared, cluster-wide catalog instead of its own per-project one.
 
 The namespaced `ImageCatalog` kind is a different story — it's scoped to the project's own namespace, so it carries none of the collision risk above. It **is** generated by default (see the ImageCatalog CR template in Rule 13), with `Cluster.spec.imageCatalogRef` wired to it instead of the older `spec.imageName` shorthand. This is the only thing left that changed here: `imageName` is no longer the default, `imageCatalogRef` → per-project `ImageCatalog` is.
+
+---
+
+## 13e. `DatabaseRole` — declarative Postgres role management (CNPG)
+
+> **Naming note:** this is `postgresql.cnpg.io/v1 DatabaseRole` — CNPG's own CR for managing Postgres roles declaratively. Do not confuse with the `vault.infra.novlok.com/v1 DatabaseRole` generated by Rule 16, which configures a role inside Vault's `database` secrets engine. Always spell out the full `apiVersion` when referring to either in generated output or documentation.
+
+Generated only when `database.cluster.roles.enable = true` (default `false`) and `has_database = true`. Replaces ad-hoc role management with two declarative `DatabaseRole` CRs:
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: DatabaseRole
+metadata:
+  name: <project>_user                                # same as bootstrap.initdb.owner (Rule 13)
+  namespace: <project>
+spec:
+  cluster:
+    name: <project>-db
+  name: <project>_user
+  ensure: present
+  login: true
+  superuser: false                                     # helm: {{ .Values.database.cluster.superuser.enable }}
+  createrole: false                                     # helm: {{ .Values.database.cluster.superuser.enable }} — true only if Vault dynamic secrets (Rule 16) need this role to create/drop other roles
+  passwordSecret:
+    name: <project>-db-credentials                     # same secret as bootstrap.initdb.secret (Rule 13)
+  databaseRoleReclaimPolicy: retain                     # never delete the bootstrap owner
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: DatabaseRole
+metadata:
+  name: migration-role-<project>
+  namespace: <project>
+spec:
+  cluster:
+    name: <project>-db
+  name: migration-role-<project>
+  ensure: present
+  login: true
+  superuser: false
+  databaseRoleReclaimPolicy: delete                     # safe to reclaim — not the bootstrap owner
+```
+
+Helm wraps both CRs in `{{- if and .Values.database.cluster.enable .Values.database.cluster.roles.enable }} ... {{- end }}`.
+
+**values.yaml schema addition** (inside `database.cluster`, default `enable: false` in all three env files):
+
+```yaml
+roles:
+  enable: false
+```
+
+### Output paths
+
+| Format | Files |
+|--------|-------|
+| `helm` | `helm/templates/database/databaserole.yaml` |
+| `kustomize` | `kubernetes/base/database/databaserole.yaml` (listed in the database Component, see Rule 13) |
+
+---
+
+## 13g. TLS (cert-manager Certificate — CNPG internal traffic)
+
+Generated only when `database.cluster.tls.enable = true` (default `false`). Distinct from Rule 15 (APISIX ingress TLS) — this secures traffic between the app, the Pooler (Rule 13a), and the CNPG instances themselves, wired via `Cluster.spec.certificates` (see Rule 13's advanced fields).
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: <project>-db-cert
+  namespace: <project>
+spec:
+  secretName: <project>-db-cert
+  usages:
+  - server auth
+  dnsNames:
+  - <project>-db-rw
+  - <project>-db-rw.<project>
+  - <project>-db-rw.<project>.svc
+  - <project>-db-rw.<project>.svc.cluster.local
+  - <project>-db-r
+  - <project>-db-r.<project>
+  - <project>-db-r.<project>.svc
+  - <project>-db-r.<project>.svc.cluster.local
+  - <project>-db-ro
+  - <project>-db-ro.<project>
+  - <project>-db-ro.<project>.svc
+  - <project>-db-ro.<project>.svc.cluster.local
+  # Add pooler DNS names below only if database.cluster.pooler.enable = true (Rule 13a):
+  - <project>-pg-pooler-rw
+  - <project>-pg-pooler-rw.<project>
+  - <project>-pg-pooler-rw.<project>.svc
+  - <project>-pg-pooler-rw.<project>.svc.cluster.local
+  issuerRef:
+    name: <cluster_issuer>                              # helm: {{ .Values.database.cluster.tls.clusterIssuer }} — ask at runtime
+    kind: ClusterIssuer
+    group: cert-manager.io
+```
+
+**Cluster CR wiring** (add to `spec.certificates` in Rule 13's Cluster CR):
+```yaml
+spec:
+  certificates:
+    serverTLSSecret: <project>-db-cert
+    serverCASecret: <ca_secret>                         # helm: {{ .Values.database.cluster.tls.caSecretName }} — pre-existing, shared cluster-wide CA, out of scope for this plugin to generate
+```
+
+> **Prerequisite:** cert-manager must be running with the named `ClusterIssuer` already configured, and the CA Secret referenced by `serverCASecret` must already exist in the project namespace (shared/copied from a cluster-wide CA — provisioning that copy is out of scope for this plugin). Flag both in the output summary if unconfirmed.
+
+**Pooler wiring** (add to `spec.pgbouncer` in Rule 13a's Pooler CR, only if both `database.cluster.pooler.enable` and `database.cluster.tls.enable` are `true`):
+```yaml
+spec:
+  pgbouncer:
+    serverTLSSecret: <project>-db-cert
+    serverCASecret: <ca_secret>
+```
+> A Pooler generated without this block while `database.cluster.tls.enable = true` leaves PgBouncer↔Postgres traffic unencrypted despite the Cluster itself being TLS-configured — a real gap found in production. Always add it when both flags are on.
+
+**values.yaml schema addition** (inside `database.cluster`, default `enable: false` in all three env files):
+
+```yaml
+tls:
+  enable: false
+  clusterIssuer: prd-clusterissuer      # ask at runtime
+  caSecretName: ""                      # ask at runtime — pre-existing shared CA secret
+```
+
+### Output paths
+
+| Format | Files |
+|--------|-------|
+| `helm` | `helm/templates/database/certificate.yaml` |
+| `kustomize` | `kubernetes/base/database/certificate.yaml` (listed in the database Component, see Rule 13) |
 
 ---
 
@@ -2017,9 +2374,81 @@ The top-level `kubernetes/base/kustomization.yaml` does **not** reference the `t
 
 Scope: **specifically for CNPG database credentials** via Vault's `database` secrets engine — not a generic replacement for `VaultStaticSecret` (Rule 2), which remains the default for all other confidential secrets. Generated only when `has_database = true` and `vault_dynamic_db_secrets_enable = true` (default `false`).
 
-> **Prerequisite (out-of-cluster, same style as the Rule 2 KV-mount gap):** Vault must already have the `database` secrets engine mounted at path `database`, with a role named `<project>` issuing credentials at `creds/<project>`. This is provisioned out-of-band (e.g. `vault write database/roles/<project> ...`) — the plugin does not generate this configuration, only the Kubernetes-side CR that consumes it.
+> **Naming note:** the CRs below are `vault.infra.novlok.com/v1 DatabaseMount`/`DatabaseConnection`/`DatabaseRole` — the novlok-operator's own Vault `database` secrets engine management. Do not confuse `DatabaseRole` here with `postgresql.cnpg.io/v1 DatabaseRole` (Rule 13e), which manages Postgres roles inside the CNPG cluster itself. Always spell out the full `apiVersion` when referring to either.
 
-### VaultDynamicSecret CR
+### Provisioning the Vault `database` secrets engine (novlok-operator)
+
+Unlike the Rule 2 KV-mount gap (no generic CR exists there), novlok-operator **does** ship CRDs for the `database` secrets engine — `DatabaseMount`, `DatabaseConnection`, `DatabaseRole` (all `vault.infra.novlok.com/v1`, namespaced). Generate all three instead of assuming out-of-band provisioning:
+
+```yaml
+apiVersion: vault.infra.novlok.com/v1
+kind: DatabaseMount
+metadata:
+  name: <project>-db-mount
+  namespace: <project>
+spec:
+  mountPath: database                    # shared path across projects — idempotent, same pattern as the Rule 2 KV mount
+  vaultAuthRef: <project>-novlok-auth     # reuses the novlok-operator VaultAuth already generated in Rule 2
+---
+apiVersion: vault.infra.novlok.com/v1
+kind: DatabaseConnection
+metadata:
+  name: <project>-db-connection
+  namespace: <project>
+spec:
+  databaseMountRef: <project>-db-mount
+  pluginName: postgresql-database-plugin
+  connectionURL: "postgresql://{{username}}:{{password}}@<project>-db-rw.<project>.svc.cluster.local:5432/<db_name>"   # helm: {{ .Values.database.cluster.dbName }}
+  credentialsSecretRef:
+    name: <project>-db-credentials        # same privileged secret as bootstrap.initdb.secret (Rule 13) / passwordSecret (Rule 13e owner role) — must have createrole:true if the dynamic role below needs to create/drop other roles
+    namespace: <project>
+  allowedRoles:
+  - <project>
+  - migration-role-<project>
+  verifyConnection: true
+---
+apiVersion: vault.infra.novlok.com/v1
+kind: DatabaseRole
+metadata:
+  name: <project>                         # Vault role name — exposed at creds/<project>, matching VaultDynamicSecret.spec.path below
+  namespace: <project>
+spec:
+  databaseConnectionRef: <project>-db-connection
+  roleType: dynamic
+  dynamic:
+    creationStatements:
+    - "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';"
+    - "GRANT ALL PRIVILEGES ON SCHEMA public TO \"{{name}}\";"
+    - "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO \"{{name}}\";"
+    - "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO \"{{name}}\";"
+    revocationStatements:
+    - "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM \"{{name}}\";"
+    - "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM \"{{name}}\";"
+    - "REVOKE ALL PRIVILEGES ON SCHEMA public FROM \"{{name}}\";"
+    - "DROP ROLE \"{{name}}\";"
+    defaultTTL: 1h
+    maxTTL: 24h
+```
+
+Helm wraps all three CRs in `{{- if and .Values.database.cluster.enable .Values.database.cluster.vaultDynamicSecrets.enable }} ... {{- end }}`.
+
+**Optional static role** — gated `database.cluster.migrationRole.enable` (default `false`), for CI/migration jobs that need a stable (non-rotating-on-every-request) user, e.g. `migration-role-<project>` created by Rule 13e's app `DatabaseRole`:
+
+```yaml
+apiVersion: vault.infra.novlok.com/v1
+kind: DatabaseRole
+metadata:
+  name: migration-role-<project>          # exposed at static-creds/migration-role-<project>
+  namespace: <project>
+spec:
+  databaseConnectionRef: <project>-db-connection
+  roleType: static
+  static:
+    username: migration-role-<project>    # must already exist as a Postgres role — see Rule 13e
+    rotationPeriod: 3600
+```
+
+### VaultDynamicSecret CR (consumes the role above)
 
 ```yaml
 apiVersion: secrets.hashicorp.com/v1beta1
@@ -2040,7 +2469,31 @@ spec:
     name: <service>                      # one entry per service that connects to the database
 ```
 
-Helm wraps this CR in `{{- if and .Values.database.cluster.enable .Values.database.cluster.vaultDynamicSecrets.enable }} ... {{- end }}`, with one `rolloutRestartTargets` entry per service via `{{- range .Values.services }}`.
+Helm wraps this CR in the same conditional as above, with one `rolloutRestartTargets` entry per service via `{{- range .Values.services }}`.
+
+### App env wiring (Deployment)
+
+Not optional — without this, `db-<project>-secret` is created but never reaches the app container. Add to every Deployment referenced in `rolloutRestartTargets`:
+
+```yaml
+env:
+- name: DATABASE_HOST
+  value: <project>-pg-pooler-rw.<project>.svc.cluster.local   # if database.cluster.pooler.enable (Rule 13a) — otherwise <project>-db-rw.<project>.svc.cluster.local
+- name: DATABASE_USERNAME
+  valueFrom:
+    secretKeyRef:
+      name: db-<project>-secret
+      key: username
+- name: DATABASE_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: db-<project>-secret
+      key: password
+- name: DATABASE_NAME
+  value: <db_name>                                              # helm: {{ .Values.database.cluster.dbName }}
+- name: DATABASE_URL
+  value: "postgresql://$(DATABASE_USERNAME):$(DATABASE_PASSWORD)@$(DATABASE_HOST):5432/$(DATABASE_NAME)"
+```
 
 ### Zero-downtime rollout strategy
 
@@ -2051,14 +2504,16 @@ The `rolloutRestartTargets` above relies on every Deployment already using the `
 ```yaml
 vaultDynamicSecrets:
   enable: false
+migrationRole:
+  enable: false
 ```
 
 ### Output paths
 
 | Format | Files |
 |--------|-------|
-| `helm` | `helm/templates/vault/dynamicsecret.yaml` |
-| `kustomize` | `kubernetes/base/vault/dynamicsecret.yaml` |
+| `helm` | `helm/templates/vault/databasemount.yaml`, `helm/templates/vault/databaseconnection.yaml`, `helm/templates/vault/databaserole.yaml`, `helm/templates/vault/dynamicsecret.yaml` |
+| `kustomize` | `kubernetes/base/vault/databasemount.yaml`, `kubernetes/base/vault/databaseconnection.yaml`, `kubernetes/base/vault/databaserole.yaml`, `kubernetes/base/vault/dynamicsecret.yaml` |
 
 ---
 

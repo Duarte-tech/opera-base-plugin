@@ -46,7 +46,13 @@ Collect all of these before generating any file. Ask as a grouped checklist in o
 | `database_backup_enable` | *(ask only if `has_database = true`)* Generate CNPG `ScheduledBackup` + `ObjectStore` (default: `false`) |
 | `backup_s3_bucket`, `backup_s3_endpoint`, `backup_credentials_secret_name`, `backup_retention_policy`, `backup_schedule` | *(ask only if `database_backup_enable = true`)* S3-compatible backend details for Barman Cloud Plugin |
 | `database_monitoring_enable` | *(ask only if `has_database = true`)* Generate a CNPG `PodMonitor` (default: `true`) |
-| `vault_dynamic_db_secrets_enable` | *(ask only if `has_database = true`)* Use Vault dynamic database credentials (`VaultDynamicSecret`) instead of/alongside static secrets (default: `false`) |
+| `database_tls_enable` | *(ask only if `has_database = true`)* Generate internal TLS for CNPG traffic (cert-manager `Certificate` + `Cluster.spec.certificates`) (default: `false`) |
+| `database_tls_cluster_issuer`, `database_tls_ca_secret_name` | *(ask only if `database_tls_enable = true`)* `ClusterIssuer` name and the pre-existing shared CA Secret name |
+| `database_roles_enable` | *(ask only if `has_database = true`)* Generate declarative `postgresql.cnpg.io/v1 DatabaseRole` CRs for the bootstrap owner and app roles (default: `false`) |
+| `vault_dynamic_db_secrets_enable` | *(ask only if `has_database = true`)* Use Vault dynamic database credentials via novlok-operator `DatabaseMount`/`DatabaseConnection`/`DatabaseRole` + `VaultDynamicSecret` instead of/alongside static secrets (default: `false`) |
+| `database_migration_role_enable` | *(ask only if `vault_dynamic_db_secrets_enable = true`)* Also generate a static Vault `DatabaseRole` for a stable migration/CI user (default: `false`) |
+| `cnpg_operator_namespace` | *(ask only if `has_database = true`)* Namespace the CNPG operator runs in, for the Cilium cross-namespace rule (default: `cnpg-system`) |
+| `monitoring_namespace` | *(ask only if `has_database = true` and `database_monitoring_enable = true`)* Namespace Prometheus/PodMonitor scraping runs from, for the Cilium cross-namespace rule |
 | `cron_jobs` | *(ask only if `has_scheduled_tasks = true` after Step 1)* List of `{job_name, schedule, invocation}` — one per detected/confirmed scheduled task |
 | `grafana_dashboard_enable` | Generate a starter Grafana dashboard-as-code ConfigMap (default: `false`) |
 
@@ -212,7 +218,11 @@ Use CR templates from `references/rules.md` Rule 13.
 **Also generate, per their own flags (all default `false` except monitoring, which defaults `true`):**
 - `database_pooler_enable = true` → generate the `Pooler` CR (Rule 13a)
 - `database_backup_enable = true` → generate `ObjectStore` + `ScheduledBackup` CRs (Rule 13b), and add the `spec.backup`/`spec.plugins` block to the Cluster CR from this step
-- `database_monitoring_enable = true` (default) → generate the `PodMonitor` CR (Rule 13c)
+- `database_monitoring_enable = true` (default) → generate the `PodMonitor` CR (Rule 13c) — and set `Cluster.spec.monitoring.enablePodMonitor: false` in the Cluster CR to avoid duplicate scraping (see Rule 13c consistency note)
+- `database_roles_enable = true` → generate the `postgresql.cnpg.io/v1 DatabaseRole` CRs (Rule 13e) for the bootstrap owner and app roles
+- `database_tls_enable = true` → generate the cert-manager `Certificate` CR (Rule 13g) and add the `spec.certificates` block to the Cluster CR; if `database_pooler_enable` is also `true`, add the matching `serverTLSSecret`/`serverCASecret` to the Pooler CR too
+
+Also apply the advanced Cluster CR fields from Rule 13 ("advanced/production fields" subsection) unconditionally where noted as always-rendered (`resources`, `storage.resizeInUseVolumes`, `postgresql.parameters` baseline), and conditionally for `enableSuperuserAccess`/`superuserSecret` (`database.cluster.superuser.enable`), `walStorage` (`database.cluster.walStorage.enable`), and HA fields (`enablePDB`/`replicationSlots`/`primaryUpdateStrategy`, only when `instances > 1`).
 
 Do **not** generate a `ClusterImageCatalog` — see Rule 13d for why (cluster-scoped, shared across projects, out of scope for per-project scaffolding). The namespaced `ImageCatalog` generated above is a different kind and has no such restriction.
 
@@ -277,15 +287,17 @@ Verify API versions against cluster: `kubectl get crd | grep hashicorp` (vault-s
 
 Skip if `has_database = false` or `vault_dynamic_db_secrets_enable = false`.
 
-Generate a `VaultDynamicSecret` CR (Rule 16) that issues dynamic database credentials via Vault's `database` secrets engine, with `rolloutRestartTargets` pointing at every Deployment from Step 3 that connects to the database.
+Generate the novlok-operator `DatabaseMount`, `DatabaseConnection`, and `DatabaseRole` CRs (`vault.infra.novlok.com/v1`, Rule 16) that provision the Vault `database` secrets engine role for this project, plus a `VaultDynamicSecret` CR that issues credentials from it, with `rolloutRestartTargets` pointing at every Deployment from Step 3 that connects to the database. If `database_migration_role_enable = true`, also generate the static `DatabaseRole` for the migration/CI user.
 
-> Prerequisite (out-of-cluster): Vault's `database` secrets engine must already be mounted with a role issuing credentials at `creds/<project>`. Flag this in the output summary if unconfirmed.
+> These CRs assume the `DatabaseConnection`'s `credentialsSecretRef` (the privileged/superuser credential Vault uses to manage dynamic creds) already exists — it's the same Secret as `bootstrap.initdb.secret` (Rule 13) / the owner role's `passwordSecret` (Rule 13e). If `database_roles_enable = false`, flag in the output summary that the owner role needs `createrole: true` granted manually for Vault to create/drop dynamic users.
+
+**Also generate the app env wiring** (Rule 16 "App env wiring") on every Deployment listed in `rolloutRestartTargets`: `DATABASE_HOST` (pooler service if `database_pooler_enable = true`, else the CNPG `-rw` service), `DATABASE_USERNAME`/`DATABASE_PASSWORD` via `secretKeyRef` on `db-<project>-secret`, and `DATABASE_URL` assembled from those. This is not optional — without it the secret is created but never reaches the app container.
 
 Also ensure every Deployment generated in Step 3 uses the `RollingUpdate{maxUnavailable: 0, maxSurge: 1}` strategy from Rule 10/16 — this applies regardless of whether this step runs, but is especially relevant here since it makes the rollout triggered by `rolloutRestartTargets` safe.
 
 Output path:
-- `helm`: `helm/templates/vault/dynamicsecret.yaml`
-- `kustomize`: `kubernetes/base/vault/dynamicsecret.yaml`
+- `helm`: `helm/templates/vault/databasemount.yaml`, `helm/templates/vault/databaseconnection.yaml`, `helm/templates/vault/databaserole.yaml`, `helm/templates/vault/dynamicsecret.yaml`
+- `kustomize`: `kubernetes/base/vault/databasemount.yaml`, `kubernetes/base/vault/databaseconnection.yaml`, `kubernetes/base/vault/databaserole.yaml`, `kubernetes/base/vault/dynamicsecret.yaml`
 
 ---
 
@@ -448,11 +460,21 @@ Auto-detected rules (appended after CoreDNS rule, based on confirmed endpoints f
 - For each confirmed **internal service**: add `toEndpoints` rule with `authentication.mode: required` (see Rule 7b template)
 - For each confirmed **external FQDN**: add `toFQDNs` rule on port 443 (HTTPS) or 80 (HTTP) (see Rule 7b template)
 
+#### Sub-step 9c — CNPG cross-namespace rules
+
+Skip if `has_database = false`. Append to the same `CiliumNetworkPolicy` (do not create separate policy objects — see Rule 7c):
+- Ingress from CNPG operator namespace (`cnpg_operator_namespace`, default `cnpg-system`) → DB instance pods on 5432/8000/9187 — always.
+- Ingress from `vault` namespace → DB instance pods on 5432 — only if `vault_dynamic_db_secrets_enable = true`.
+- Ingress from `monitoring_namespace` → DB instance pods on 9187 — only if `database_monitoring_enable = true`.
+- Egress to `world:443` — only if `database_backup_enable = true`.
+
+Use the templates from `references/rules.md` Rule 7c.
+
 Output path:
 - `helm`: `helm/templates/cilium/`
 - `kustomize`: `kubernetes/base/cilium/` + `kustomization.yaml`
 
-Use the CR template from `references/rules.md` Rule 7. Append auto-detected egress rules per Rule 7b.
+Use the CR template from `references/rules.md` Rule 7. Append auto-detected egress rules per Rule 7b, then CNPG cross-namespace rules per Rule 7c.
 
 > mTLS requires Cilium deployed with `authentication.mutual.spire.enabled: true`. Note this prerequisite in the output summary if the cluster state is unknown.
 
@@ -612,11 +634,14 @@ Actions: `Created` (new), `Skipped` (correctly absent — e.g. an optional area 
 | `helm/templates/app/` | Created | N deployments (securityContext, volumeMounts/volumes if persistence), N services, N configmaps |
 | `helm/templates/app/pvc.yaml` | Created / Skipped | PVC (if has_persistence); gated by `persistence.enabled` in values |
 | `helm/templates/vault/` | Created / Skipped | Secrets found: yes/no; includes novlok-operator VaultAuth/VaultPolicy/VaultKubernetesRole |
-| `helm/templates/vault/dynamicsecret.yaml` | Created / Skipped | VaultDynamicSecret + rolloutRestartTargets (if vault_dynamic_db_secrets_enable) |
+| `helm/templates/vault/databasemount.yaml`, `databaseconnection.yaml`, `databaserole.yaml` | Created / Skipped | novlok-operator Vault `database` secrets engine provisioning (if vault_dynamic_db_secrets_enable) |
+| `helm/templates/vault/dynamicsecret.yaml` | Created / Skipped | VaultDynamicSecret + rolloutRestartTargets + app env wiring (if vault_dynamic_db_secrets_enable) |
 | `helm/templates/database/` | Created / Skipped | CNPG ImageCatalog + Cluster + Database CR (if has_database); `database.cluster.enable: false` in all values files |
 | `helm/templates/database/pooler.yaml` | Created / Skipped | Pooler/PgBouncer (if database.cluster.pooler.enable) |
 | `helm/templates/database/backup.yaml` | Created / Skipped | ObjectStore + ScheduledBackup (if database.cluster.backup.enable) |
-| `helm/templates/database/podmonitor.yaml` | Created / Skipped | Postgres PodMonitor (if database.cluster.monitoring.enable, default true) |
+| `helm/templates/database/podmonitor.yaml` | Created / Skipped | Postgres PodMonitor (if database.cluster.monitoring.enable, default true); pairs with `Cluster.spec.monitoring.enablePodMonitor: false` |
+| `helm/templates/database/databaserole.yaml` | Created / Skipped | CNPG DatabaseRole — owner + app roles (if database.cluster.roles.enable) |
+| `helm/templates/database/certificate.yaml` | Created / Skipped | Internal TLS Certificate (if database.cluster.tls.enable) |
 | `helm/templates/apisix/` | Created | Route + N upstreams |
 | `helm/templates/tls/` | Created / Skipped | Certificate (if tls.certManager.enable) + ApisixTls (if tls.enabled) |
 | `helm/templates/cloudflare/` | Created | kind: Record, serviceRef: apisix-gateway |
@@ -641,11 +666,14 @@ Actions: `Created` (new), `Skipped` (correctly absent — e.g. an optional area 
 | `kubernetes/base/app/` | Created | N deployments (securityContext, volumeMounts/volumes if persistence), N services, N configmaps |
 | `kubernetes/base/app/pvc.yaml` | Created / Skipped | PVC (if has_persistence); listed in app/kustomization.yaml |
 | `kubernetes/base/vault/` | Created / Skipped | Secrets found: yes/no; includes novlok-operator VaultAuth/VaultPolicy/VaultKubernetesRole |
-| `kubernetes/base/vault/dynamicsecret.yaml` | Created / Skipped | VaultDynamicSecret + rolloutRestartTargets (if vault_dynamic_db_secrets_enable) |
+| `kubernetes/base/vault/databasemount.yaml`, `databaseconnection.yaml`, `databaserole.yaml` | Created / Skipped | novlok-operator Vault `database` secrets engine provisioning (if vault_dynamic_db_secrets_enable) |
+| `kubernetes/base/vault/dynamicsecret.yaml` | Created / Skipped | VaultDynamicSecret + rolloutRestartTargets + app env wiring (if vault_dynamic_db_secrets_enable) |
 | `kubernetes/base/database/` | Created / Skipped | CNPG ImageCatalog + Cluster + Database CR as Kustomize Component (if has_database); overlays opt in by uncommenting `components` block |
 | `kubernetes/base/database/pooler.yaml` | Created / Skipped | Pooler/PgBouncer (if database.cluster.pooler.enable); listed in database Component |
 | `kubernetes/base/database/backup.yaml` | Created / Skipped | ObjectStore + ScheduledBackup (if database.cluster.backup.enable); listed in database Component |
-| `kubernetes/base/database/podmonitor.yaml` | Created / Skipped | Postgres PodMonitor (if database.cluster.monitoring.enable, default true); listed in database Component |
+| `kubernetes/base/database/podmonitor.yaml` | Created / Skipped | Postgres PodMonitor (if database.cluster.monitoring.enable, default true); pairs with `Cluster.spec.monitoring.enablePodMonitor: false`; listed in database Component |
+| `kubernetes/base/database/databaserole.yaml` | Created / Skipped | CNPG DatabaseRole — owner + app roles (if database.cluster.roles.enable); listed in database Component |
+| `kubernetes/base/database/certificate.yaml` | Created / Skipped | Internal TLS Certificate (if database.cluster.tls.enable); listed in database Component |
 | `kubernetes/base/apisix/` | Created | Route + N upstreams |
 | `kubernetes/base/tls/` | Created / Skipped | Certificate (if tls.certManager.enable) + ApisixTls as Kustomize Component (if tls.enabled); overlays opt in by uncommenting `components` block |
 | `kubernetes/base/cloudflare/` | Created | kind: Record, serviceRef: apisix-gateway |
