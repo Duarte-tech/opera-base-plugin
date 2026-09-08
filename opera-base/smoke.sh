@@ -13,8 +13,13 @@ check() {
     echo "  [ok] $label"
   else
     echo "  [FAIL] $label — missing: $path"
-    ((ERRORS++))
+    ERRORS=$((ERRORS + 1))
   fi
+}
+
+fail() {
+  echo "  [FAIL] $1"
+  ERRORS=$((ERRORS + 1))
 }
 
 warn() {
@@ -27,35 +32,31 @@ echo "---------------------"
 echo "manifest"
 check "plugin.json" "$PLUGIN_ROOT/.claude-plugin/plugin.json"
 
+# Claude Code plugins auto-discover skills/*/SKILL.md and commands/*.md by
+# convention — plugin.json carries no skills/commands arrays, so check the
+# discovery files directly rather than grepping the manifest.
+COMPONENTS=(yaml-gen operonix-deploy dockerfile-scan image-scan)
+
 echo "skills"
-check "yaml-gen/SKILL.md"        "$PLUGIN_ROOT/skills/yaml-gen/SKILL.md"
-check "operonix-deploy/SKILL.md" "$PLUGIN_ROOT/skills/operonix-deploy/SKILL.md"
+for s in "${COMPONENTS[@]}"; do
+  check "$s/SKILL.md" "$PLUGIN_ROOT/skills/$s/SKILL.md"
+done
 
 echo "commands"
-check "yaml-gen.md"        "$PLUGIN_ROOT/commands/yaml-gen.md"
-check "operonix-deploy.md" "$PLUGIN_ROOT/commands/operonix-deploy.md"
+for c in "${COMPONENTS[@]}"; do
+  check "$c.md" "$PLUGIN_ROOT/commands/$c.md"
+done
 
 echo "references"
 check "rules.md"           "$PLUGIN_ROOT/references/rules.md"
 check "open-questions.md"  "$PLUGIN_ROOT/references/open-questions.md"
 
-echo "plugin.json registrations"
-for skill in yaml-gen operonix-deploy; do
-  if grep -q "\"$skill\"" "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null; then
-    echo "  [ok] skill $skill registered"
-  else
-    echo "  [FAIL] skill $skill not in plugin.json"
-    ((ERRORS++))
-  fi
-done
-for cmd in yaml-gen operonix-deploy; do
-  if grep -q "\"$cmd\"" "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null; then
-    echo "  [ok] command $cmd registered"
-  else
-    echo "  [FAIL] command $cmd not in plugin.json"
-    ((ERRORS++))
-  fi
-done
+echo "plugin.json"
+MANIFEST="$PLUGIN_ROOT/.claude-plugin/plugin.json"
+grep -q '"name"[[:space:]]*:[[:space:]]*"opera-base"' "$MANIFEST" \
+  && echo "  [ok] name = opera-base" || fail "plugin.json missing name \"opera-base\""
+grep -Eq '"version"[[:space:]]*:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"' "$MANIFEST" \
+  && echo "  [ok] semver version present" || fail "plugin.json missing/invalid version"
 
 echo "content checks"
 if grep -q "TO BE FILLED" "$PLUGIN_ROOT/references/rules.md" 2>/dev/null; then

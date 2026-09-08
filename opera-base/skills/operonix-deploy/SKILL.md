@@ -26,10 +26,9 @@ Collect all of these before generating any file. Ask as a grouped checklist in o
 | `services` | Services and ports, e.g. `frontend:3000, api:8080` |
 | `subdomain` | Subdomain for APISIX route → `<subdomain>.novlok.co` |
 | `image_registry` | Image path, e.g. `registry.gitlab.com/<group>/<project>/app` |
-| `gitlab_app_repo` | Application GitLab repo URL |
-| `gitlab_helm_repo` | Helm chart GitLab repo URL (separate repo) — **only if `output_format = helm`** |
-| `gitlab_argocd_repo` | ArgoCD GitLab repo URL (to fetch Application CR template) |
-| `gitlab_access` | GitLab access for ArgoCD Secret — SSH key or HTTPS token |
+| `gitlab_repo` | Project **mono-repo** URL — holds app code, `helm/<project>/` (or `kubernetes/`), `argocd/`, `ops/`. There is no separate chart or ArgoCD repo. |
+| `gitlab_group_url` | GitLab group/subgroup that holds the project repos — for the `ApplicationSet` SCM generator and the group `repo-creds` Secret (default: derived from `gitlab_repo`) |
+| `gitlab_access` | GitLab access for the ArgoCD `repo-creds` Secret — SSH key or HTTPS token |
 | `vault_address` | Vault internal address, e.g. `https://vault.novlok.co` |
 | `vault_mount_mode` | *(ask only if `has_secrets = true` after Step 1)* Vault KV mount: **`new`** (create a dedicated mount for this project) or **`default`** (reuse an existing mount) |
 | `vault_mount_path` | *(ask only if `vault_mount_mode = default`)* Existing mount path, e.g. `kv/novlok` |
@@ -55,6 +54,11 @@ Collect all of these before generating any file. Ask as a grouped checklist in o
 | `monitoring_namespace` | *(ask only if `has_database = true` and `database_monitoring_enable = true`)* Namespace Prometheus/PodMonitor scraping runs from, for the Cilium cross-namespace rule |
 | `cron_jobs` | *(ask only if `has_scheduled_tasks = true` after Step 1)* List of `{job_name, schedule, invocation}` — one per detected/confirmed scheduled task |
 | `grafana_dashboard_enable` | Generate a starter Grafana dashboard-as-code ConfigMap (default: `false`) |
+| `alertmanager_config_enable` | Generate an `AlertmanagerConfig` CR for the **ops cluster** (`ops/`; delivered by the consolidated `ApplicationSet`) (default: `false`) |
+| `loki_rules_enable` | Generate a starter Loki rules `ConfigMap` for the **ops cluster** (`ops/`; delivered by the consolidated `ApplicationSet`) (default: `false`) |
+| `ops_namespace` | Namespace on the ops cluster the monitoring stack runs in — used by the `ApplicationSet` `ops` target and by the `ops/` manifests (default: `monitoring`) |
+| `ops_cluster_name` | Name of the ops cluster as registered in the app-cluster ArgoCD (default: `ops`) |
+| `alertmanager_config_selector_label` | *(ask only if `alertmanager_config_enable`)* Label the ops Alertmanager's `alertmanagerConfigSelector` matches (default: `alertmanagerConfig: enabled`) |
 
 ---
 
@@ -81,11 +85,11 @@ Execute steps in order. Steps 1 and 2 are read-only scans that inform later step
 >
 > | | `helm` | `kustomize` |
 > |-|--------|-------------|
-> | Root | `helm/templates/<area>/` | `kubernetes/base/<area>/` |
+> | Root | `helm/<project>/templates/<area>/` | `kubernetes/base/<area>/` |
 > | Variable fields | `{{ .Values.<key> }}` | hardcoded (env diff via overlays) |
-> | Env differentiation | `values.yaml` per branch in app repo | `kubernetes/overlays/<env>/` |
-> | ArgoCD source | chart repo + values from app repo | `kubernetes/overlays/<env>` in app repo |
-> | CI image tag patch | `yq` on `values.yaml` | `kustomize edit set image` on overlay |
+> | Env differentiation | `values-<env>.yaml` per branch (repo root) | `kubernetes/overlays/<env>/` |
+> | ArgoCD source (set by the Rule 22 ApplicationSet) | single-source: `helm/<project>` + `valueFiles: ["../../values-<env>.yaml"]`, same repo/branch | single-source: `kubernetes/overlays/<env>`, same repo/branch |
+> | CI image tag patch | `yq` on `values-<env>.yaml` (repo root) | `kustomize edit set image` on overlay |
 
 > **Reconciliation rule:** "already exists" is not the same as "already correct". Before treating any file or directory as already satisfied, compare what's actually on disk against what these rules and this skill would generate *today*.
 > - If it differs — wrong API group/kind, outdated field names, an obsolete directory layout (e.g. a leftover `crossplane/` folder from before the novlok-operator migration) — **update it in place** to match the current templates, and report it as `Updated` in the output summary (see Output summary below).
@@ -387,20 +391,31 @@ Output path — Instrumentation CR:
 
 ---
 
-### Step 8 — Alertmanager manifests
+### Step 8 — Alertmanager manifests (PrometheusRule — app cluster)
 
-Skip if `prometheus.prometheusRules.enable = false`.
+Skip if `prometheus.prometheusRules.enable = false` (default `true`).
 
-Basic `PrometheusRule` CR with alerts:
-- `PodCrashLooping` — pod restarts > 3 in 5 min
-- `HighCPU` — CPU > 80% for 10 min
-- `HighMemory` — memory > 85% for 10 min
+Generate the `PrometheusRule` CR using the full template from `references/rules.md` Rule 19 — alerts `PodCrashLooping`, `HighCPU`, `HighMemory`, each carrying a `namespace="<project>"` label (the ops `AlertmanagerConfig` route in Rule 20 matches on it).
+
+This stays in the **app cluster** (qua/prd), deployed by the project's own ArgoCD `Application` — do **not** move it to `ops/`.
 
 Helm: wrap the whole resource in `{{- if .Values.prometheus.prometheusRules.enable }}`.
 
 Output path:
-- `helm`: `helm/templates/alertmanager/`
-- `kustomize`: `kubernetes/base/alertmanager/` + `kustomization.yaml`
+- `helm`: `helm/templates/alertmanager/prometheusrule.yaml`
+- `kustomize`: `kubernetes/base/alertmanager/prometheusrule.yaml` + `kustomization.yaml`
+
+---
+
+### Step 8a — Ops-cluster observability manifests (AlertmanagerConfig, Loki rules)
+
+Generate the `ops/` manifests as **plain YAML at the app repo root** — no Helm templating, no kustomize wrapping, identical for both `output_format` values. Substitute `<project>`, `<ops_namespace>`, `<ops_cluster_name>`, `<gitlab_group>` at generation time. These target the **ops cluster** and are delivered by the ops `ApplicationSet` (Step 11).
+
+- `alertmanager_config_enable = true` → generate `ops/alertmanagerconfig-<project>.yaml` from `references/rules.md` Rule 20. Flag in the output summary: the `<project>-alerting` Secret (key `webhook-url`) must exist in `<ops_namespace>` on the ops cluster, and the ops Alertmanager selectors must pick up `<alertmanager_config_selector_label>` / `<ops_namespace>`.
+- `loki_rules_enable = true` → generate `ops/loki-rules-<project>.yaml` from `references/rules.md` Rule 21 (starter skeleton — flag that the LogQL must be customized). Flag: the ops Loki ruler must load `loki_rule: "1"` ConfigMaps from `<ops_namespace>` and have an Alertmanager target.
+- If both are `false` → skip this step and the ops `ApplicationSet` in Step 11; note `Skipped` in the summary.
+
+Output path (both formats): `ops/alertmanagerconfig-<project>.yaml`, `ops/loki-rules-<project>.yaml`
 
 ---
 
@@ -520,25 +535,20 @@ Generate the format-specific scaffold files that wrap all manifests produced in 
 
 ---
 
-### Step 11 — ArgoCD resources
+### Step 11 — ArgoCD resources (mono-repo, consolidated ApplicationSet)
 
-1. Fetch the ArgoCD Application CR template from `gitlab_argocd_repo` (find existing multi-source `Application` CR; use as base).
+The delivery model is **one `ApplicationSet` + one group `repo-creds` Secret**, both cross-project singletons at the repo root under `argocd/`. Do **not** generate a per-project `application-<project>.yaml` or `secret-<project>-repo.yaml`.
 
-2. Generate `argocd/application-<project>.yaml` — source depends on `output_format`:
+1. Generate/reconcile `argocd/repo-creds.yaml` from `references/rules.md` Rule 22 — an ArgoCD `repo-creds` Secret scoped to `<gitlab_group_url>`, credential from `gitlab_access`.
 
-   **`helm`:**
-   - Source 1: Helm chart repo (`gitlab_helm_repo`), branch = current env
-   - Source 2: App repo (`gitlab_app_repo`), ref = `values`, branch = current env
-   - `helm.valueFiles`: `["$values/values-<env>.yaml"]` — single complete env-specific file (no shared base)
+2. Generate/reconcile `argocd/applicationset.yaml` from `references/rules.md` Rule 22 — matrix of an SCM-provider generator (`<gitlab_group_url>`, `branchMatch: ^(qua|prd)$`, `pathsExist:` = `[kubernetes/overlays]` for kustomize or `[helm]` for helm) × a list `{app, ops}`. The template branches on `.name`:
+   - `app` → `path` = `kubernetes/overlays/{{ .branch }}` (kustomize) or `helm/<project>` + `helm.valueFiles: ["../../values-{{ .branch }}.yaml"]` (helm); destination `name: {{ .branch }}`, `namespace: {{ .repository }}`.
+   - `ops` → `path: ops`; destination `name: <ops_cluster_name>`, `namespace: <ops_namespace>`.
+   Always generated (even with both ops enables off — the `ops` target just has nothing to sync yet).
 
-   **`kustomize`:**
-   - Single source: App repo (`gitlab_app_repo`), path = `kubernetes/overlays/<env>`, branch = current env
-   - `gitlab_helm_repo` not used
+3. Reconciliation rule applies to both files — create if missing; if present, verify the group is covered and the templates match (add another `scmProvider` under the matrix if this project's group differs); report `Created` / `Already existed` / `Updated`; never emit a second copy or any per-project `Application`.
 
-   Destination: `namespace: <project_name>`, `server: https://kubernetes.default.svc`
-
-3. Generate `argocd/secret-<project>-repo.yaml`:
-   - Type: `repository`, GitLab access from `gitlab_access`, namespace: `argocd`
+4. Flag prerequisites in the output summary: app clusters registered in ArgoCD as `qua`/`prd` and the ops cluster as `<ops_cluster_name>`; the `argocd-gitlab-scm` token Secret in `argocd`; ArgoCD ≥ 2.6 with SCM provider generators enabled. If SCM generators are unavailable, fall back per Rule 22 (git generator, or per-project `application-<project>-<env>[-ops].yaml`) and note the substitution.
 
 ---
 
@@ -583,7 +593,7 @@ Adapt per stack:
 - `BASE_IMAGE_NODE` / build image variable
 - Lint and test jobs (see stack table in Rule 8)
 - `APP_IMAGE`: `<image_registry>`
-- `workflow.rules`: skip changes to manifests dirs
+- `workflow.rules`: skip changes to manifest dirs — include both `kubernetes/**/*` and `ops/**/*` (Rule 8)
 
 The `build:app` job **must** use `moby/buildkit:rootless` — use the exact template from `references/rules.md` Rule 8 (`build:app` section). Do not use `docker:dind`, `docker:27`, any `docker:*` image, `docker build`, or any Docker-in-Docker approach.
 
@@ -599,9 +609,9 @@ The `git commit` line in this job **must** use YAML single-quote wrapping to pre
 ```
 
 ArgoCD apply job (`apply-argocd`) — always include:
-- Use the template from `references/rules.md` Rule 8 (`apply-argocd` section)
-- Replace `<project>` in the filenames with the actual project name
-- Required CI variable to document: `KUBE_CONFIG` (base64-encoded kubeconfig)
+- Use the template from `references/rules.md` Rule 8 (`apply-argocd` section) — applies `argocd/repo-creds.yaml` then `argocd/applicationset.yaml` (both cross-project singletons; idempotent from any project's pipeline)
+- Required CI variable to document: `KUBE_CONFIG` (base64-encoded kubeconfig for the app-cluster `argocd` namespace)
+- `workflow.rules` skips `kubernetes/**/*` and `ops/**/*`; `argocd/**/*` triggers only this job
 
 ---
 
@@ -648,11 +658,14 @@ Actions: `Created` (new), `Skipped` (correctly absent — e.g. an optional area 
 | `helm/templates/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
 | `helm/templates/prometheus/grafana-dashboard.yaml` | Created / Skipped | Starter dashboard ConfigMap (if prometheus.grafanaDashboard.enable) — customize panels before relying on it |
 | `helm/templates/otel/` | Created / Skipped | Instrumentation CR (if otel.autoinstrumentation.enable) |
-| `helm/templates/alertmanager/` | Created | — |
+| `helm/templates/alertmanager/prometheusrule.yaml` | Created / Skipped | PrometheusRule — app cluster (Rule 19); gated `prometheus.prometheusRules.enable` (default true) |
+| `ops/alertmanagerconfig-<project>.yaml` | Created / Skipped | AlertmanagerConfig for the ops cluster (Rule 20; if alertmanager_config_enable) — plain YAML, app repo root; needs `<project>-alerting` Secret in `<ops_namespace>` |
+| `ops/loki-rules-<project>.yaml` | Created / Skipped | Starter Loki rules ConfigMap for the ops cluster (Rule 21; if loki_rules_enable) — customize LogQL before relying on it |
 | `helm/templates/autoscaling/` | Created | HPA + KEDA templates; active type set by `autoscaling.type` in values.yaml |
 | `helm/templates/cilium/` | Created | mTLS ingress+egress; SPIRE required |
 | `helm/templates/cron/` | Created / Skipped | N CronJobs (if has_scheduled_tasks) |
-| `argocd/` | Created | Application (multi-source) + Secret |
+| `argocd/repo-creds.yaml` | Created / Already existed / Updated | Group-scoped ArgoCD `repo-creds` Secret (Rule 22) — cross-project singleton |
+| `argocd/applicationset.yaml` | Created / Already existed / Updated | Consolidated app+ops ApplicationSet (Rule 22) — cross-project singleton; always generated |
 | `Dockerfile` / `docker-build/Dockerfile` | Created | React → `docker-build/Dockerfile`; all other stacks → project root |
 | `docker-build/entrypoint.sh` | Created / Skipped | React + Keycloak only; replaces KEYCLOAK_URL/REALM/CLIENT_ID/API_URL placeholders at startup |
 | `.gitlab-ci.yml` | Created | Stack: <stack>; tag via yq; React uses `--local dockerfile=docker-build` |
@@ -680,16 +693,19 @@ Actions: `Created` (new), `Skipped` (correctly absent — e.g. an optional area 
 | `kubernetes/base/prometheus/` | Created / Already existed | ServiceMonitor (if prometheus.serviceMonitor.enable) |
 | `kubernetes/base/prometheus/grafana-dashboard.yaml` | Created / Skipped | Starter dashboard ConfigMap (if prometheus.grafanaDashboard.enable) — customize panels before relying on it |
 | `kubernetes/base/otel/` | Created / Skipped | Instrumentation CR (stack-specific, if otel.autoinstrumentation.enable) |
-| `kubernetes/base/alertmanager/` | Created | — |
+| `kubernetes/base/alertmanager/` | Created / Skipped | PrometheusRule — app cluster (Rule 19); gated `prometheus.prometheusRules.enable` (default true) |
+| `ops/alertmanagerconfig-<project>.yaml` | Created / Skipped | AlertmanagerConfig for the ops cluster (Rule 20; if alertmanager_config_enable) — plain YAML, app repo root (not `kubernetes/`); needs `<project>-alerting` Secret in `<ops_namespace>` |
+| `ops/loki-rules-<project>.yaml` | Created / Skipped | Starter Loki rules ConfigMap for the ops cluster (Rule 21; if loki_rules_enable) — customize LogQL before relying on it |
 | `kubernetes/base/autoscaling/` | Created | HPA + KEDA templates; active type set by `autoscaling.type` in values.yaml |
 | `kubernetes/base/cilium/` | Created | mTLS ingress+egress; SPIRE required |
 | `kubernetes/base/cron/` | Created / Skipped | N CronJobs, one file per job (if has_scheduled_tasks) |
 | `kubernetes/overlays/dev|qua|prd/` | Created | replicas patch + image tag placeholder |
-| `argocd/` | Created | Application (single source, overlay path) + Secret |
+| `argocd/repo-creds.yaml` | Created / Already existed / Updated | Group-scoped ArgoCD `repo-creds` Secret (Rule 22) — cross-project singleton |
+| `argocd/applicationset.yaml` | Created / Already existed / Updated | Consolidated app+ops ApplicationSet (Rule 22) — cross-project singleton; always generated |
 | `Dockerfile` / `docker-build/Dockerfile` | Created | React → `docker-build/Dockerfile`; all other stacks → project root |
 | `docker-build/entrypoint.sh` | Created / Skipped | React + Keycloak only; replaces KEYCLOAK_URL/REALM/CLIENT_ID/API_URL placeholders at startup |
 | `.gitlab-ci.yml` | Created | Stack: <stack>; tag via kustomize edit; React uses `--local dockerfile=docker-build` |
 | `version.yaml` | Created / Already existed | — |
 
 List any secrets moved to Vault.
-Flag any item that requires manual follow-up (e.g., ArgoCD CR template not found in repo, SPIRE not confirmed running).
+Flag any item that requires manual follow-up (e.g., app/ops clusters not registered in ArgoCD, `argocd-gitlab-scm` token Secret missing, ArgoCD < 2.6 / SCM generators disabled, SPIRE not confirmed running).
